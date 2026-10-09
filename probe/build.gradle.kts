@@ -16,7 +16,8 @@ android {
         applicationId = "org.andashi.updater.probe"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 1
+        // The e2e builds two versions of this app to update between (-PprobeVersionCode=2).
+        versionCode = (project.findProperty("probeVersionCode") as String?)?.toInt() ?: 1
         versionName = "0.1.0"
     }
     kotlin {
