@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="channel_action">Action needed</string>
+    <string name="channel_failure">Failures</string>
+    <string name="channel_service">Working</string>
+    <string name="check_now">Check now</string>
+    <string name="no_config">No configuration from the host yet.</string>
+</resources>

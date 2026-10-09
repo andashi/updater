@@ -202,7 +202,8 @@ Nothing new in kind. The provisioning repo gains:
 
 - a catalog entry for the updater (source `obtainium`, i.e. our GitHub
   release, all six zones), installed *first* in `10-apps.sh`, pinned in
-  `apks/certs/`;
+  `apks/certs/` - installed twice on a fresh device, the second time with
+  `-i` naming itself, because the first cannot (§6);
 - `-i <updater>` (and `--update-ownership`, *measure*) on every install of a
   managed app, so the updater is installer of record from day one; the same
   for `install-existing`, which carries the installer of record per package;
@@ -227,7 +228,7 @@ Nothing new in kind. The provisioning repo gains:
 | update in a running zone | the updater, `PackageInstaller` session with `USER_ACTION_NOT_REQUIRED` | silent when: installer of record, `REQUEST_INSTALL_PACKAGES` allowed, `UPDATE_PACKAGES_WITHOUT_USER_ACTION` (normal permission, declared), updater targets API 31+, app targets API 29+, same signer, and (Android 14+) nobody else holds update ownership |
 | update of a package that lives only in stopped zones | host, same adb command, on the stopped user | nothing runs in a stopped user; `adb install -i <pkg> --user 14 <apk>` into stopped Lab succeeded, the user stayed stopped, data is created on first unlock (measured 2026-10-02, shell) |
 | update of a package shared with a running zone | whichever running zone's updater gets there first; the code path is device-wide | a package is installed once per device; Ops' Bitwarden is Home's Bitwarden |
-| the updater itself | the updater, same session path; the host at provisioning | self-update as installer of record is silent; the process dies on commit, so the in-flight session is persisted first and reconciled on the next start |
+| the updater itself | the updater, same session path; the host at provisioning | self-update as installer of record is silent; the process dies on commit, so the in-flight session is persisted first and reconciled on the next start. Its first install cannot name itself as installer, because the named installer must already exist (measured 2026-10-10, emulator-5562, shell: installer stays null); the host installs it, then installs the same version again with `-i`, which moves the installer (§6, measured 2026-10-02) |
 | anything Obtainium/Accrescent/Play/the GrapheneOS store installed | theirs | decision 0012; the updater reports them as `foreign` and never touches them |
 
 The owner's line "andashi install should probably use the app directly"
@@ -343,6 +344,12 @@ the host has never had.
   Orbot's lockdown VPN. So the host grants the exemption at provisioning,
   reads it back from `dumpsys deviceidle whitelist`, and the updater
   reports `exemption: missing` loudly if it ever finds itself without it.
+  Measured 2026-10-10 on the same instance: the entry survives
+  `install -r` of the same or a newer version (so a self-update keeps it)
+  and is dropped by `pm clear` and by uninstall; after either, the host
+  grants it again. Uninstalling the updater also resets the installer of
+  record of every app it installed to null, so an uninstall is never a
+  repair: the host would have to reinstall every managed app with `-i`.
   This is almost certainly Obtainium's missing piece too: the one GrapheneOS
   Pixel report that said "unrestricted fixed it" (#1550, 2025-08-28) is
   this exemption.
@@ -498,6 +505,14 @@ what to install is decided by lock and policy, never by a command.
   against `checked` turns a silent refresh into a `stale` warning and a
   notification; a missing heartbeat is `unknown`, reported, not alarmed.
   Same trust as the lock, no history noise on `main`.
+- **Silent-update throttle:** Android answers a second silent update of
+  the same package by the same installer within a short window with
+  `STATUS_PENDING_USER_ACTION` (measured 2026-10-10 on emulator-5562: two
+  updates about 25 s apart, the second asked for confirmation). The updater
+  does not work around it - it is the system's rate limit on exactly this
+  power - and a lock moves a package a version a day, so it is only ever
+  seen when a maintainer re-locks twice in a minute. The state then says
+  `user-action` and the notification carries the tap.
 - **Retry budget:** per package and lock version, exponential backoff, a
   failure notification after the third miss, then a daily retry until the
   lock moves.
@@ -547,6 +562,34 @@ A browser's sideloading per zone could be closed with the install appop
 (`appops set --user N <browser> REQUEST_INSTALL_PACKAGES deny`); that is a
 provisioning decision, noted here because the updater's report will show
 what gets through.
+
+## 13a. Your catalog, your lock
+
+A phone provisioned from a private catalog (`CONFIG_DIR`, provisioning's
+"your catalog, not the template") must not run against this project's lock:
+the updater would report `unverifiable` for every app the template does not
+know and `missing` for nothing it should, which is safe and useless. The
+lock URL and the pins come from the host, so the answer is the host's:
+
+- **A fork that runs the refresh.** The lock refresh is a workflow in the
+  provisioning repository; a fork carries it and commits its own
+  `apks/lock.json` on its own `main`, daily, with its own pins. The
+  generated `updater.json` points `lock.url` (and `heartbeatUrl`) at that
+  fork. Nothing in the updater knows which repository it is reading.
+- **No fork, no CI: `host-only`.** The host already produces a verified
+  lock for the first install (`make lock`, `make from-lock`); pushed through
+  the ingest provider it is the lock the zone uses, and the phone updates
+  from it as far as it goes. The price is the one 0002 names for this mode:
+  updates arrive when the laptop does. `andashi status` says so.
+- **Both.** A private catalog can mix: the template's apps against the
+  template's lock would need one lock per source, which the config does not
+  model. One zone, one lock. A catalog that wants apps outside its lock
+  lists them with a source the updater does not manage, and the report
+  names them as foreign.
+
+What provisioning owes for this: the generator takes the lock URL from the
+catalog's configuration rather than hard-coding this repository's, and
+`make lock` is documented as the host-only path.
 
 ## 14. Reporting
 
