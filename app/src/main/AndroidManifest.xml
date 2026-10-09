@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Placeholder until the Android shell lands (design §5.2). Kept minimal so
+     the module builds from the first commit; every component is added with
+     its gate and its test. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application
+        android:label="Andashi Updater"
+        android:allowBackup="false"
+        android:supportsRtl="true" />
+</manifest>

@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:label="Updater Probe"
+        android:allowBackup="false"
+        android:networkSecurityConfig="@xml/network_security_config">
+
+        <!-- The shell triggers a run: am broadcast -n <pkg>/.ProbeReceiver
+             -a org.andashi.updater.probe.RUN. Exported, because the unrooted
+             shell cannot reach a non-exported receiver; gated the way the
+             launcher's reload receiver is: the sender must hold
+             WRITE_SECURE_SETTINGS, which only shell and system do. -->
+        <receiver
+            android:name=".ProbeReceiver"
+            android:exported="true"
+            android:permission="android.permission.WRITE_SECURE_SETTINGS">
+            <intent-filter>
+                <action android:name="org.andashi.updater.probe.RUN" />
+                <action android:name="org.andashi.updater.probe.SCHEDULE" />
+                <action android:name="org.andashi.updater.probe.CANCEL" />
+            </intent-filter>
+        </receiver>
+
+        <!-- What every run recorded, for the shell:
+             content query, uri content://org.andashi.updater.probe.state/runs -->
+        <provider
+            android:name=".ProbeStateProvider"
+            android:authorities="org.andashi.updater.probe.state"
+            android:exported="true"
+            android:permission="android.permission.WRITE_SECURE_SETTINGS"
+            android:grantUriPermissions="false" />
+
+        <!-- WorkManager's foreground service must declare the type the
+             worker asks for, or Android 14+ refuses the promotion. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+    </application>
+</manifest>
