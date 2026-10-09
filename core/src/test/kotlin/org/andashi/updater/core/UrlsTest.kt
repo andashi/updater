@@ -35,6 +35,13 @@ class UrlsTest {
         assertEquals("no host", Urls.refuse("https:///x.apk", hosts))
     }
 
+    @Test fun `cleartext localhost is refused by default and allowed only when the debug flag says so, and only on localhost`() {
+        assertEquals("scheme 'http' is not https", Urls.refuse("http://localhost:18080/lock.json", setOf("localhost")))
+        assertNull(Urls.refuse("http://localhost:18080/lock.json", setOf("localhost"), cleartextLocalhost = true))
+        assertEquals("scheme 'http' is not https", Urls.refuse("http://github.com/x.apk", setOf("github.com"), cleartextLocalhost = true))
+        assertTrue(Urls.refuse("http://localhost:18080/x", setOf("github.com"), cleartextLocalhost = true)!!.contains("not allow-listed"))
+    }
+
     @Test fun `isAllowed mirrors refuse`() {
         assertTrue(Urls.isAllowed("https://github.com/x.apk", hosts))
         assertFalse(Urls.isAllowed("https://evil.example/x.apk", hosts))

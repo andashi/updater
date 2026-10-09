@@ -65,19 +65,22 @@ data class Config(
     )
 
     val hostOnly: Boolean get() = lock.mode == "host-only"
-    val lockPolicy: LockPolicy get() = LockPolicy(allowedHosts = lock.allowedHosts.toSet())
+
+    /** Debug builds pass true (the emulator e2e); a release build cannot, so a lock or config naming `http://localhost` is refused there. */
+    fun lockPolicy(cleartextLocalhost: Boolean = false): LockPolicy = LockPolicy(allowedHosts = lock.allowedHosts.toSet(), cleartextLocalhost = cleartextLocalhost)
+    val lockPolicy: LockPolicy get() = lockPolicy(false)
 
     fun pinFor(pkg: String): String? = managed.firstOrNull { it.pkg == pkg }?.signer
 
-    fun validate(): List<String> {
+    fun validate(cleartextLocalhost: Boolean = false): List<String> {
         val problems = mutableListOf<String>()
         if (schemaVersion != SUPPORTED_VERSION) problems += "schemaVersion $schemaVersion, only $SUPPORTED_VERSION is understood"
         if (zone.isBlank()) problems += "zone is empty"
         when (lock.mode) {
             "fetch" -> {
                 if (lock.allowedHosts.isEmpty()) problems += "lock.allowedHosts is empty"
-                Urls.refuse(lock.url, lock.allowedHosts.toSet())?.let { problems += "lock.url: $it" }
-                if (lock.heartbeatUrl.isNotEmpty()) Urls.refuse(lock.heartbeatUrl, lock.allowedHosts.toSet())?.let { problems += "lock.heartbeatUrl: $it" }
+                Urls.refuse(lock.url, lock.allowedHosts.toSet(), cleartextLocalhost)?.let { problems += "lock.url: $it" }
+                if (lock.heartbeatUrl.isNotEmpty()) Urls.refuse(lock.heartbeatUrl, lock.allowedHosts.toSet(), cleartextLocalhost)?.let { problems += "lock.heartbeatUrl: $it" }
             }
             "host-only" -> {}
             else -> problems += "lock.mode '${lock.mode}' is neither fetch nor host-only"
@@ -99,13 +102,13 @@ data class Config(
         const val SUPPORTED_VERSION = 1
         private val json = Json { ignoreUnknownKeys = true }
 
-        fun parse(text: String): Config {
+        fun parse(text: String, cleartextLocalhost: Boolean = false): Config {
             val config = try {
                 json.decodeFromString(serializer(), text)
             } catch (e: Exception) {
                 throw ConfigFormatException("not an updater config: ${e.message?.lineSequence()?.firstOrNull()}")
             }
-            val problems = config.validate()
+            val problems = config.validate(cleartextLocalhost)
             if (problems.isNotEmpty()) throw ConfigFormatException(problems.joinToString("; "))
             return config
         }

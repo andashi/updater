@@ -108,7 +108,7 @@ data class LockEntry(
         if (size > policy.maxBytes) problems += "size $size exceeds the limit of ${policy.maxBytes} bytes"
         if (urls.isEmpty()) problems += "no urls"
         for (u in urls) {
-            val why = Urls.refuse(u, policy.allowedHosts)
+            val why = Urls.refuse(u, policy.allowedHosts, policy.cleartextLocalhost)
             if (why != null) problems += "url $u: $why"
         }
         return problems
@@ -126,6 +126,8 @@ data class LockPolicy(
     val allowedHosts: Set<String>,
     /** An APK larger than this is refused before a byte is fetched. Tor Browser is ~110 MB. */
     val maxBytes: Long = 512L * 1024 * 1024,
+    /** Debug builds only: `http://localhost` for the emulator e2e (see [Urls.refuse]). */
+    val cleartextLocalhost: Boolean = false,
 )
 
 class LockFormatException(message: String) : Exception(message)

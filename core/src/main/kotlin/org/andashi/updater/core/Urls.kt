@@ -10,23 +10,31 @@ import java.net.URISyntaxException
  * widen it, so a lock cannot send a phone to a server of its choosing.
  */
 object Urls {
-    /** Null when allowed; otherwise the reason, in words that go into the state the host reads. */
-    fun refuse(url: String, allowedHosts: Set<String>): String? {
+    /**
+     * Null when allowed; otherwise the reason, in words that go into the
+     * state the host reads. [cleartextLocalhost] is the debug build's
+     * allowance for the emulator e2e, which serves over `adb reverse` on
+     * loopback: `http://localhost` on any port, nothing else. A release
+     * build never sets it, and the network security config refuses
+     * cleartext there a second time.
+     */
+    fun refuse(url: String, allowedHosts: Set<String>, cleartextLocalhost: Boolean = false): String? {
         val uri = try {
             URI(url)
         } catch (_: URISyntaxException) {
             return "not a URL"
         }
-        if (uri.scheme?.lowercase() != "https") return "scheme '${uri.scheme}' is not https"
         val host = uri.host?.lowercase() ?: return "no host"
+        val loopback = cleartextLocalhost && host == "localhost" && uri.scheme?.lowercase() == "http"
+        if (!loopback && uri.scheme?.lowercase() != "https") return "scheme '${uri.scheme}' is not https"
         if (uri.userInfo != null) return "user info in URL"
-        if (uri.port != -1 && uri.port != 443) return "port ${uri.port} is not 443"
+        if (!loopback && uri.port != -1 && uri.port != 443) return "port ${uri.port} is not 443"
         if (uri.fragment != null) return "fragment in URL"
         if (host !in allowedHosts.map { it.lowercase() }) return "host '$host' is not allow-listed"
         return null
     }
 
-    fun isAllowed(url: String, allowedHosts: Set<String>): Boolean = refuse(url, allowedHosts) == null
+    fun isAllowed(url: String, allowedHosts: Set<String>, cleartextLocalhost: Boolean = false): Boolean = refuse(url, allowedHosts, cleartextLocalhost) == null
 }
 
 object Hex {

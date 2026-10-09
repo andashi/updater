@@ -70,4 +70,10 @@ class ConfigTest {
     }
 
     @Test fun `refuses what is not JSON`() = assertTrue(refused("nope").startsWith("not an updater config"))
+
+    @Test fun `a localhost lock url is refused unless the debug flag is set`() {
+        val text = config(url = "http://localhost:18080/lock.json", hosts = "\"localhost\"")
+        assertTrue(refused(text).contains("lock.url"))
+        assertTrue(Config.parse(text, cleartextLocalhost = true).lockPolicy(true).cleartextLocalhost)
+    }
 }
