@@ -79,7 +79,7 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         for ((state, record) in states.zip(records)) notify(context, state, record, previous[record.pkg])
 
         val due = records.any { it.state == "behind" && Backoff.due(it.nextTry?.let { t -> runCatching { Instant.parse(t) }.getOrNull() }, now) }
-        if (due && exempt) Schedule.install(context, trigger)
+        if (due && exempt && !config.hostOnly) Schedule.install(context, trigger)
         // While the system holds a session for a quiet moment, keep looking
         // at the package manager at intervals, whatever the receiver does.
         if (records.any { it.state == "waiting-constraints" }) Schedule.reconcile(context, RECONCILE_EVERY_MINUTES)
@@ -164,13 +164,26 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                     }
                 "failed" -> if (prev.locked == state.entry.versionCode) prev.copy(state = "behind", installer = installed?.installer) else base.copy(state = "behind", locked = state.entry.versionCode, seenAt = now.toString())
                 else -> base.copy(state = "behind", locked = state.entry.versionCode, since = keepSince("behind"), seenAt = seenAtFor(prev, state.entry.versionCode, now),
-                    reason = if (state.rebuilt) "same version, other bytes in the lock: converging to the locked build" else prev?.reason?.takeIf { it.startsWith("bound reached") })
+                    reason = when {
+                        config.hostOnly -> "host-only zone: the laptop installs this"
+                        state.rebuilt -> "same version, other bytes in the lock: converging to the locked build"
+                        else -> prev?.reason?.takeIf { it.startsWith("bound reached") }
+                    })
             }
             is AppState.Ahead -> base.copy(state = "ahead", locked = state.locked, reason = "installed ${state.installed} is newer than the lock's ${state.locked}", since = keepSince("ahead"))
-            is AppState.NotOwner -> base.copy(state = "not-owner", locked = state.locked, reason = "installer of record is ${state.installer ?: "nobody"}; the host repairs this with a same-version reinstall naming the updater", since = keepSince("not-owner"))
+            is AppState.NotOwner -> base.copy(state = "not-owner", locked = state.locked, reason = notOwnerReason(state), since = keepSince("not-owner"))
             is AppState.Missing -> base.copy(state = "missing", reason = "not installed in this user; the updater never first-installs", since = keepSince("missing"))
             is AppState.Unverifiable -> base.copy(state = "unverifiable", reason = state.reason, since = keepSince("unverifiable"))
         }
+    }
+
+    /** Which ownership fact is wrong, so the host repairs that one: the installer of record (a same-version reinstall naming the updater) or Android 14's update owner. */
+    private fun notOwnerReason(s: AppState.NotOwner): String {
+        val self = applicationContext.packageName
+        val parts = mutableListOf<String>()
+        if (s.installer != self) parts += "installer of record is ${s.installer ?: "nobody"}; the host repairs this with a same-version reinstall naming the updater"
+        if (s.updateOwner != null && s.updateOwner != self) parts += "update ownership is held by ${s.updateOwner}; the host repairs this with a reinstall naming the updater with --update-ownership"
+        return parts.joinToString("; ")
     }
 
     /** The first sighting of this locked version in this zone, kept across checks; a new version starts a new clock. */
@@ -200,7 +213,7 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         val entered = prev?.state != record.state || prev.reason != record.reason
         when (state) {
             is AppState.Unverifiable -> if (entered) Notifications.failure(context, record.pkg, record.label, record.reason ?: "unverifiable")
-            is AppState.NotOwner -> if (entered) Notifications.failure(context, record.pkg, record.label, "The updater is not this app's installer of record (${state.installer ?: "nobody"} is). Updates would ask for a tap; the laptop repairs this.")
+            is AppState.NotOwner -> if (entered) Notifications.failure(context, record.pkg, record.label, "Updates would ask for a tap: ${record.reason}. The laptop repairs this.")
             is AppState.Missing -> if (entered) Notifications.failure(context, record.pkg, record.label, "Managed by the catalog but not installed in this zone; the laptop installs it.")
             is AppState.Current -> Notifications.clearFailure(context, record.pkg)
             else -> {}
