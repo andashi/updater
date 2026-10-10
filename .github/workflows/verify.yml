@@ -36,5 +36,12 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
-      - name: every module's debug build
-        run: ./gradlew --no-daemon :probe:assembleDebug
+      - name: core tests and every module's debug build
+        run: ./gradlew --no-daemon :core:build :probe:assembleDebug
+      - name: core test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: core-test-report
+          path: core/build/reports/tests/test
+          if-no-files-found: ignore
