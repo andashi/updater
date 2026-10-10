@@ -55,14 +55,17 @@ class ProbeWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         }
         record.network = describeNetwork(applicationContext)
         withContext(Dispatchers.IO) { fetch(url, record) }
+        // A cancelled run (CANCEL) writes nothing: the store was just cleared.
+        if (isStopped) return Result.failure()
         ProbeStore.append(applicationContext, record.finish())
         return if (record.ok) Result.success() else Result.failure(workDataOf("error" to record.error))
     }
 
     private fun fetch(url: String, record: ProbeRecord) {
         val t0 = System.nanoTime()
+        var conn: HttpURLConnection? = null
         try {
-            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            conn = (URL(url).openConnection() as HttpURLConnection).apply {
                 connectTimeout = 30_000
                 readTimeout = 60_000
                 instanceFollowRedirects = true
@@ -72,7 +75,11 @@ class ProbeWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             record.httpStatus = conn.responseCode
             val digest = MessageDigest.getInstance("SHA-256")
             var bytes = 0L
-            conn.inputStream.use { input ->
+            // A 4xx/5xx has no inputStream (it throws); the error stream is
+            // read instead so the record says "http 404, n bytes", not
+            // "FileNotFoundException".
+            val stream = if (conn.responseCode >= 400) (conn.errorStream ?: java.io.ByteArrayInputStream(ByteArray(0))) else conn.inputStream
+            stream.use { input ->
                 val buf = ByteArray(16 * 1024)
                 while (true) {
                     val n = input.read(buf)
@@ -89,6 +96,7 @@ class ProbeWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             record.ok = false
             record.error = "${e.javaClass.simpleName}: ${e.message}"
         } finally {
+            conn?.disconnect()
             record.durationMs = (System.nanoTime() - t0) / 1_000_000
         }
     }

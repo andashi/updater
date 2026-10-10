@@ -66,9 +66,20 @@ class ProbeReceiver : BroadcastReceiver() {
                     .build(),
             )
             ACTION_CANCEL -> {
-                wm.cancelUniqueWork("probe-periodic")
-                wm.cancelUniqueWork("probe-run")
-                ProbeStore.clear(context)
+                // Cancellation is asynchronous; a worker still running would
+                // append its record after a clear. So: finish the broadcast
+                // off the main thread, wait for both cancellations to be
+                // processed, then clear.
+                val pending = goAsync()
+                Thread {
+                    try {
+                        wm.cancelUniqueWork("probe-periodic").result.get()
+                        wm.cancelUniqueWork("probe-run").result.get()
+                        ProbeStore.clear(context)
+                    } finally {
+                        pending.finish()
+                    }
+                }.start()
             }
         }
     }

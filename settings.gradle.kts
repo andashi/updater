@@ -1,7 +1,7 @@
-// Three modules, by what they may import:
+// Modules, by what they may import (each lands with its own change):
+//   probe  a throwaway app that answers one hardware question (design §16)
 //   core   pure Kotlin, no Android - every decision the updater makes, unit-tested
 //   app    the updater (org.andashi.updater)
-//   probe  a throwaway app that answers one hardware question (design §16)
 pluginManagement {
     repositories {
         google()
@@ -17,4 +17,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "updater"
-include(":core", ":app", ":probe")
+include(":probe")

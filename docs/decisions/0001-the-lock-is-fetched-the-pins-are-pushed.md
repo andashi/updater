@@ -24,8 +24,10 @@ builds of packages the host already installed, or freeze.
 
 ## Consequences
 
-- An attacker holding GitHub or CI cannot run code on the phone through
-  this path; they can delay, and the phone says so.
+- An attacker holding GitHub or CI cannot make the phone install code that
+  is not signed by the upstream key of an already-installed app through
+  this path; they can select among upstream-signed builds or delay, and the
+  phone says so.
 - A pin changes only through the laptop. That is one cable per key rotation
   per app, which is rare, and it is the price of the lock being unable to
   move a pin.

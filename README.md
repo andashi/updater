@@ -1,8 +1,10 @@
 # andashi / updater
 
 The app that keeps an [andashi](https://github.com/andashi/provisioning)
-phone's apps current after the first install. One instance per zone. It is
-the installer of record of every app the catalog names, fetches
+phone's apps current after the first install. One instance per zone. It is meant
+to be the installer of record of every app the catalog names - the laptop
+makes it so, and the updater reports when something else took that role -
+and it fetches
 `apks/lock.json` from the provisioning repository, verifies every APK
 against the lock's SHA-256 and the signer the laptop pinned, installs it
 silently, and calls an update done only when the package manager says so.

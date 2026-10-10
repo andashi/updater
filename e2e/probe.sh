@@ -25,12 +25,8 @@ evidence "$SNAPSHOT"
 
 # Home (0) and whichever secondary full user is running (the snapshot decides
 # which; Cloud by design, Anon after a measurement left it on). Found by
-# state, not assumed.
-second=""
-for u in $(ash pm list users | sed -n 's/.*UserInfo{\([0-9]*\):\([A-Za-z]*\):.*/\1/p'); do
-  [ "$u" = 0 ] || [ "$u" = 10 ] && continue
-  ash am get-started-user-state "$u" 2>/dev/null | grep -q RUNNING_UNLOCKED && { second="$u"; break; }
-done
+# state and flags, never by name or number.
+second="$(running_secondary_users | head -1)"
 check "a running secondary zone exists" '[ -n "$second" ]'
 printf '  ..    second zone: user %s\n' "$second"
 
@@ -44,11 +40,11 @@ check "installed for the second zone" 'ash pm path --user "$second" "$PKG" | gre
 # emulator-5562: Wi-Fi PARTIAL_CONNECTIVITY, never VALIDATED, TCP to the
 # outside fails, so WorkManager's CONNECTED never holds). The file is served
 # from the host over adb reverse instead, and the run is asked to skip the
-# network constraint. The mechanics are the same; the network is not, which
-# is the whole reason the hardware soak exists.
-PORT=18080
+# network constraint. Because the file comes from the host over loopback, a
+# failed fetch here IS a failed test - the mechanics are what is proven; the
+# network a phone has is the whole reason the hardware soak exists.
+PORT="$(free_port)"
 SERVE="$(mktemp -d)"; printf '{"lockVersion":1,"entries":[]}\n' > "$SERVE/lock.json"
-fuser -k "$PORT/tcp" >/dev/null 2>&1   # a server left over from an aborted run would serve a deleted directory
 ( cd "$SERVE" && exec python3 -m http.server "$PORT" --bind 127.0.0.1 >/dev/null 2>&1 ) & HTTP_PID=$!
 trap 'kill $HTTP_PID 2>/dev/null; rm -rf "$SERVE"; emu_release' EXIT
 adb -s "$SERIAL" reverse "tcp:$PORT" "tcp:$PORT" >/dev/null
@@ -87,7 +83,9 @@ done
 
 printf '\n== the soak can be scheduled and cancelled\n'
 ash am broadcast --user 0 -n "$PKG/.ProbeReceiver" -a org.andashi.updater.probe.SCHEDULE >/dev/null 2>&1
-check "periodic work is registered with JobScheduler" 'wait_for 30 "$PKG" dumpsys jobscheduler >/dev/null'
+# The periodic job itself, not the package name anywhere in the dump: the
+# one-time runs above leave history there too.
+check "periodic work is registered with JobScheduler" 'wait_for 30 "Periodic: interval=\+15m" sh -c "dumpsys jobscheduler | grep -A40 \"ProbeWorker#@androidx.work.systemjobscheduler@$PKG\""'
 ash am broadcast --user 0 -n "$PKG/.ProbeReceiver" -a org.andashi.updater.probe.CANCEL >/dev/null 2>&1
 sleep 3
 check "cancel clears the record" '[ -z "$(ash content query --user 0 --uri "content://$PKG.state/runs" 2>/dev/null | grep Row)" ]'

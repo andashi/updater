@@ -265,7 +265,8 @@ Per managed package, the state is one of:
 
 | State | Meaning | Reported as |
 |---|---|---|
-| `current` | installed `versionCode` == lock, installer of record == updater | fine |
+| `current` | installed `pkg`, `versionCode` **and the APK's SHA-256** match the lock, the signer matches the pin, **and** installer of record is the updater | fine |
+| `held` | an update is due but younger than `minimumAgeHours` (§11); nothing is fetched until the window has passed | pending, with the time it opens |
 | `behind` | installed < lock; an update is due | pending |
 | `ahead` | installed > lock; somebody updated past the lock, or the lock went back | warning, never downgraded |
 | `downloading` / `verifying` / `installing` / `waiting-constraints` | in flight, with the session id | pending |
@@ -284,10 +285,14 @@ The loop, per check:
    older lock is refused and reported), age against `maxAgeDays`. Then, for
    every managed package: the lock's `signer` must equal the pin from the
    host, or the package is `unverifiable`.
-2. **Compare.** Read the installed `versionCode`, signer and installer of
-   record for every managed package. Decide the state. Nothing is downloaded
-   for `current`, `ahead`, `not-owner` (one attempt per lock version, so the
-   person sees one prompt, not one a day), `unverifiable`.
+2. **Compare.** Read the installed `versionCode`, the installed APK's
+   SHA-256 (hashed once per installed build and cached by its
+   `lastUpdateTime`), signer and installer of record for every managed
+   package. Decide the state. A lock that names the same `versionCode` with
+   other bytes - a rebuild the maintainer took through `review` - is
+   `behind`, not `current`: the phone converges to the locked bytes. Nothing
+   is downloaded for `current`, `ahead`, `held`, `not-owner`,
+   `unverifiable`.
 3. **Download** into app-private storage, streaming through SHA-256,
    refusing a body longer than `size`. URLs in order; the first that yields
    the locked bytes wins. A partial file is kept for a `Range` retry (v1.1;
@@ -301,11 +306,12 @@ The loop, per check:
    write the file into the session **re-hashing while writing** and abandon
    the session if the second hash differs (closes the file-swap window
    entirely). Re-read the installed `versionCode` immediately before commit:
-   if it already is the target — another zone got there first — abandon as
-   `current`. Commit through install constraints (§11) or directly.
+   if it already carries the target's `versionCode` and bytes — another zone
+   got there first — abandon as `current`. Commit through install constraints (§11) or directly.
 6. **Confirm.** The status receiver's `STATUS_SUCCESS` triggers a read-back;
-   only `versionCode == lock` sets `current`. Anything else is its own state
-   with the system's message attached. The process may have been killed in
+   only the lock's `versionCode` with the lock's bytes under the updater's
+   ownership sets `current`. Anything else is its own state with the
+   system's message attached. The process may have been killed in
    the meantime (self-update, low memory); the persisted in-flight record is
    reconciled against the package manager on every start.
 
@@ -459,6 +465,10 @@ what to install is decided by lock and policy, never by a command.
   `versionCode`. The lock itself is at most a day behind upstream, and the
   requirement is bounded time for *patches*. `minimumAgeHours` exists for the
   owner who wants a window (§3.2, compromised upstream) and defaults to 0.
+  Its clock is the moment this zone's updater first saw that `versionCode`
+  in a valid lock (recorded per package), not the lock's `generated` or any
+  upstream date the phone cannot verify; until the window has passed the
+  package is `held`, with the time it opens, and nothing is fetched.
   Holding a version is the catalog's `release_tag`: the lock then does not
   move, and the updater has nothing to do.
 - **How gently:** Android 14's install constraints
@@ -543,7 +553,10 @@ what gets through.
 - **On the phone:** the status activity, and notifications only for
   *action needed* (a system prompt waits, a `boundHours` commit is imminent)
   and *failure* (retry budget spent, lock stale or unverifiable, a signer
-  disagreement). Success is silent; the status screen has the history.
+  disagreement, a package the updater does not own or that is missing from
+  this user - each once, when the state is entered, because the host must
+  act and the phone must say so). Success is silent; the status screen has
+  the history.
 - **On the host:** `andashi status` shows per zone `current / behind /
   failed / action needed / foreign`, the lock's age, and for stopped zones
   what `pm` says against the host inventory. `andashi status` is the one
@@ -685,4 +698,4 @@ Each with a recommendation; each becomes a decision record with its price.
   phone, Obtainium's one tap is the only way a managed app gets updated at
   all, and removing it earlier would leave those apps with no updater.
 - `andashi status` and `andashi update` as in §5.3.
-- The eight measurements in §16.
+- The four measurements §16 still lists as open.

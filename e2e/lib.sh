@@ -73,6 +73,21 @@ wait_for() {   # $1 = seconds, $2 = grep -E pattern, $3... = command (run throug
   return 1
 }
 
+# A free TCP port on the host for adb reverse, so the test never kills a
+# server it does not own.
+free_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
+
+# Secondary full users that are running and unlocked: by state and flags,
+# never by name or number. 0x20 in the flags is a managed profile (Work),
+# which has no launcher and no updater of its own.
+running_secondary_users() {
+  ash pm list users | sed -n 's/.*UserInfo{\([0-9]*\):[^:]*:\([0-9a-f]*\)}.*/\1 \2/p' | while read -r id flags; do
+    [ "$id" = 0 ] && continue
+    [ $(( 0x$flags & 0x20 )) -ne 0 ] && continue
+    ash am get-started-user-state "$id" 2>/dev/null | grep -q RUNNING_UNLOCKED && echo "$id"
+  done
+}
+
 # Evidence header for the pull request: instance, snapshot, build, identity.
 evidence() {   # $1 = snapshot
   printf '  ..    instance %s, snapshot %s, build %s (API %s), %s\n' "$SERIAL" "$1" \

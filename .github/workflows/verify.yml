@@ -1,8 +1,9 @@
 name: verify
 
-# What CI can prove without a device: the pure-Kotlin decisions in core/
-# with their refusal cases, that every module compiles, and the shell-side
-# tests. The emulator e2e in e2e/ never runs here (AGENTS.md "Tests").
+# What CI can prove without a device: that every module compiles, the
+# pure-Kotlin decisions with their refusal cases once core/ exists, and the
+# shell-side tests. The emulator e2e in e2e/ never runs here (AGENTS.md
+# "Tests").
 #
 # JDK 21 is pinned although the owner's machine runs 26: core/ compiles to
 # bytecode 21 either way, and a release build (design §12) must not depend
@@ -35,15 +36,5 @@ jobs:
           distribution: temurin
           java-version: '21'
       - uses: gradle/actions/setup-gradle@v4
-      - name: core tests and every module's debug build
-        run: ./gradlew --no-daemon :core:build :probe:assembleDebug :app:assembleDebug
-      - name: unsigned release builds
-        # The artifact the owner compares against before signing (0003).
-        run: ./gradlew --no-daemon :app:assembleRelease
-      - name: core test report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: core-test-report
-          path: core/build/reports/tests/test
-          if-no-files-found: ignore
+      - name: every module's debug build
+        run: ./gradlew --no-daemon :probe:assembleDebug
