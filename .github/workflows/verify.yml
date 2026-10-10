@@ -37,7 +37,11 @@ jobs:
           java-version: '21'
       - uses: gradle/actions/setup-gradle@48b5f213c81028ace310571dc5ec0fbbca0b2947 # v4
       - name: core tests and every module's debug build
-        run: ./gradlew --no-daemon :core:build :probe:assembleDebug
+        run: ./gradlew --no-daemon :core:build :probe:assembleDebug :app:assembleDebug
+      - name: unsigned release build
+        # Buildability only; the artifact the owner compares against before
+        # signing is published by release.yml (decision 0003).
+        run: ./gradlew --no-daemon :app:assembleRelease
       - name: core test report
         if: always()
         uses: actions/upload-artifact@v4
