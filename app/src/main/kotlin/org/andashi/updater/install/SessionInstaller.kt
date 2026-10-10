@@ -25,9 +25,16 @@ import java.io.File
 class SessionInstaller(private val context: Context, private val packages: Packages) {
 
     sealed class Outcome {
-        /** Committed; the result arrives at [InstallStatusReceiver] with this session id. */
-        data class Committed(val sessionId: Int, val waitingForConstraints: Boolean) : Outcome()
+        /**
+         * Verified and written; not yet committed. The caller persists the
+         * session id first and then calls [commit], so the status receiver
+         * can never run before the record it updates exists (a fast
+         * callback, or a self-update replacing the process, would otherwise
+         * overwrite `current` with `installing`).
+         */
+        class Ready(val sessionId: Int, val waitingForConstraints: Boolean, val commit: () -> Unit) : Outcome()
         data class AlreadyCurrent(val versionCode: Long) : Outcome()
+        data class Ahead(val versionCode: Long) : Outcome()
         data class Refused(val reason: String) : Outcome()
     }
 
@@ -66,6 +73,7 @@ class SessionInstaller(private val context: Context, private val packages: Packa
         when (val c = Verify.beforeCommit(entry, written.sha256(), packages.installed(entry.pkg))) {
             is Verify.Commit.Refused -> { session.abandon(); return Outcome.Refused(c.reason) }
             is Verify.Commit.AlreadyCurrent -> { session.abandon(); return Outcome.AlreadyCurrent(c.versionCode) }
+            is Verify.Commit.Ahead -> { session.abandon(); return Outcome.Ahead(c.versionCode) }
             Verify.Commit.Proceed -> {}
         }
         val status = InstallStatusReceiver.pendingIntent(context, sessionId, entry.pkg, entry.versionCode, lockSha)
@@ -79,12 +87,14 @@ class SessionInstaller(private val context: Context, private val packages: Packa
                 if (constraints.notForeground) { setAppNotForegroundRequired(); setAppNotInteractingRequired() }
             }.build()
             session.close()
-            installer.commitSessionAfterInstallConstraintsAreMet(sessionId, status.intentSender, ic, constraints.boundHours * 3_600_000L)
-            return Outcome.Committed(sessionId, waitingForConstraints = true)
+            return Outcome.Ready(sessionId, waitingForConstraints = true) {
+                installer.commitSessionAfterInstallConstraintsAreMet(sessionId, status.intentSender, ic, constraints.boundHours * 3_600_000L)
+            }
         }
-        session.commit(status.intentSender)
-        session.close()
-        return Outcome.Committed(sessionId, waitingForConstraints = false)
+        return Outcome.Ready(sessionId, waitingForConstraints = false) {
+            session.commit(status.intentSender)
+            session.close()
+        }
     }
 
     /** The bound elapsed: commit the session the constraints were holding, directly. */

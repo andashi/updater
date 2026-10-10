@@ -118,7 +118,7 @@ class StatusActivity : Activity() {
         }
         head.addView(text(version, 13f, MUTED))
         row.addView(head)
-        val detail = listOfNotNull(a.reason, a.lastError, a.nextTry?.let { "next try ${ago(it, Instant.now(), future = true)}" }).joinToString("\n")
+        val detail = listOfNotNull(a.reason, a.lastError, a.nextTry?.takeIf { a.state == "failed" }?.let { "next try ${ago(it, Instant.now(), future = true)}" }).joinToString("\n")
         if (detail.isNotEmpty()) row.addView(text(detail, 13f, if (a.state in ATTENTION) AMBER else MUTED).apply { setPadding(0, (6 * dp).toInt(), 0, 0) })
         val wrap = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(0, 0, 0, (8 * dp).toInt()) }
         wrap.addView(row)
@@ -128,7 +128,7 @@ class StatusActivity : Activity() {
     private fun chip(state: String): View {
         val color = when (state) {
             "current" -> GREEN
-            "behind", "downloading", "verifying", "installing", "waiting-constraints" -> CYAN
+            "behind", "held", "downloading", "verifying", "installing", "waiting-constraints" -> CYAN
             "user-action", "failed", "unverifiable" -> RED
             else -> AMBER
         }
@@ -178,7 +178,7 @@ class StatusActivity : Activity() {
 
     private fun order(state: String): Int = when (state) {
         "user-action" -> 0; "failed", "unverifiable" -> 1
-        "behind", "downloading", "verifying", "installing", "waiting-constraints" -> 2
+        "behind", "held", "downloading", "verifying", "installing", "waiting-constraints" -> 2
         "not-owner", "missing", "ahead" -> 3; else -> 4
     }
 
@@ -194,6 +194,6 @@ class StatusActivity : Activity() {
         private val RED = Color.parseColor("#FF5C9E")
         private val GOLD = Color.parseColor("#FFD84D")
         private val ATTENTION = setOf("user-action", "failed", "unverifiable", "not-owner", "missing", "ahead")
-        private val IN_FLIGHT = setOf("behind", "downloading", "verifying", "installing", "waiting-constraints")
+        private val IN_FLIGHT = setOf("behind", "held", "downloading", "verifying", "installing", "waiting-constraints")
     }
 }

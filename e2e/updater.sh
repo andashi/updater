@@ -18,7 +18,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UPD=org.andashi.updater.debug
 PROBE=org.andashi.updater.probe
 SNAPSHOT="${SNAPSHOT:-provisioned-0120}"
-PORT=18080
+PORT="$(free_port)"
 WORK="$(mktemp -d)"; SERVE="$WORK/serve"; mkdir -p "$SERVE"
 bt="$(ls -d "${ANDROID_HOME:-/opt/android-sdk}"/build-tools/* | sort -V | tail -1)"
 
@@ -58,11 +58,12 @@ lock() {   # $1 = generated, $2... = entries (json)
 }
 serve() { cp "$WORK/$1" "$SERVE/$2"; }
 
-fuser -k "$PORT/tcp" >/dev/null 2>&1
 ( cd "$SERVE" && exec python3 -m http.server "$PORT" --bind 127.0.0.1 >/dev/null 2>&1 ) & HTTP_PID=$!
-trap 'kill $HTTP_PID 2>/dev/null; rm -rf "$WORK"; emu_release' EXIT
 
 emu_acquire "$SNAPSHOT"
+# After acquisition: emu_acquire installs its own EXIT trap, and a trap set
+# before it would be replaced. This one releases the emulator too.
+trap 'kill $HTTP_PID 2>/dev/null; rm -rf "$WORK"; emu_release' EXIT
 evidence "$SNAPSHOT"
 adb -s "$SERIAL" reverse "tcp:$PORT" "tcp:$PORT" >/dev/null
 

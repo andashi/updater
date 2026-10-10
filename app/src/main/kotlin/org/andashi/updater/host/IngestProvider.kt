@@ -71,7 +71,7 @@ class IngestProvider : ContentProvider() {
                     val config = Config.parse(text, Debug.cleartextLocalhost(context))   // throws with every problem named
                     store.writeConfigText(text)
                     store.update { it.copy(config = Store.ConfigState(sha, Instant.now().toString(), config.zone)) }
-                    store.writeDiagnostics(Store.Diagnostics(sha, true, null, Instant.now().toString()))
+                    store.writeDiagnostics(store.diagnostics().copy(configSha256 = sha, success = true, error = null, at = Instant.now().toString()))
                     store.record("-", "config-accepted", detail = "zone ${config.zone}, ${config.managed.size} managed, mode ${config.lock.mode}")
                     Schedule.apply(context, config)
                     Schedule.checkNow(context, "config")
@@ -79,17 +79,23 @@ class IngestProvider : ContentProvider() {
                 LOCK -> {
                     val config = store.configText()?.let { Config.parse(it, Debug.cleartextLocalhost(context)) }
                         ?: throw LockFormatException("no config yet; a host-pushed lock needs the config's pins and hosts first")
+                    // In fetch mode the phone would never read it: accepting
+                    // it would be success for work not done.
+                    if (!config.hostOnly) throw LockFormatException("the config is in fetch mode; a host-pushed lock is only used in host-only mode")
                     val previous = store.hostLockText()?.let { runCatching { Lock.parse(it, config.lockPolicy(Debug.cleartextLocalhost(context))) }.getOrNull() }
                     Lock.parse(text, config.lockPolicy(Debug.cleartextLocalhost(context)), previous)
                     store.writeHostLockText(text)
-                    store.writeDiagnostics(Store.Diagnostics(sha, true, null, Instant.now().toString()))
+                    store.writeDiagnostics(store.diagnostics().copy(lockSha256 = sha, lockSuccess = true, lockError = null, lockAt = Instant.now().toString()))
                     store.record("-", "host-lock-accepted", lockSha = sha)
                     Schedule.checkNow(context, "host-lock")
                 }
             }
         } catch (e: Exception) {
             val why = "${e.javaClass.simpleName}: ${e.message}"
-            store.writeDiagnostics(Store.Diagnostics(null, false, why, Instant.now().toString()))
+            // Each document has its own diagnostics: a refused lock must not
+            // erase the record of the config that is in force.
+            if (kind == CONFIG) store.writeDiagnostics(store.diagnostics().copy(configSha256 = null, success = false, error = why, at = Instant.now().toString()))
+            else store.writeDiagnostics(store.diagnostics().copy(lockSha256 = null, lockSuccess = false, lockError = why, lockAt = Instant.now().toString()))
             store.record("-", "$kind-refused", detail = why)
         } finally {
             tmp.delete()

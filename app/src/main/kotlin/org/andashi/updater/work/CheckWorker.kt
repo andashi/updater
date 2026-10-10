@@ -15,6 +15,7 @@ import org.andashi.updater.core.Fresh
 import org.andashi.updater.core.Freshness
 import org.andashi.updater.core.Heartbeat
 import org.andashi.updater.core.Hex
+import org.andashi.updater.core.Hold
 import org.andashi.updater.core.Lock
 import org.andashi.updater.core.LockFormatException
 import org.andashi.updater.net.Fetcher
@@ -22,6 +23,7 @@ import org.andashi.updater.net.HttpFetcher
 import org.andashi.updater.pm.AndroidPackages
 import org.andashi.updater.store.Store
 import java.security.MessageDigest
+import java.time.Duration
 import java.time.Instant
 
 /**
@@ -50,7 +52,7 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         // service from a background job (design §8). Granted by the host,
         // reported here, loudly when missing.
         val exempt = context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName)
-        if (!exempt) Notifications.lockProblem(context, "The updater is not exempt from battery optimisation; the host must grant it (cmd deviceidle whitelist). Nothing can be installed in the background until then.")
+        if (exempt) Notifications.clearExemptionMissing(context) else Notifications.exemptionMissing(context)
 
         val fetcher = HttpFetcher(config.lockPolicy(Debug.cleartextLocalhost(applicationContext)).allowedHosts, Debug.cleartextLocalhost(applicationContext))
         val (lock, lockState) = obtainLock(config, store, fetcher, now)
@@ -146,21 +148,23 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                 if (prev != null && prev.state != "current") store.record(state.pkg, "confirmed-current", from = prev.installed, to = state.versionCode, lockSha = lockSha)
                 base.copy(state = "current", locked = state.versionCode, since = keepSince("current"))
             }
-            is AppState.Behind -> when (prev?.state) {
+            is AppState.Behind -> if (heldRecord(state, config, prev, now, base) != null) heldRecord(state, config, prev, now, base)!! else when (prev?.state) {
                 "downloading", "verifying", "installing", "waiting-constraints", "user-action" ->
                     // In flight only while the session the record names still
                     // exists; a session the system dropped (reboot, abandon,
                     // timeout the receiver never heard) goes back to behind.
                     if (prev.sessionId != null && packages.sessionExists(prev.sessionId)) {
                         prev.copy(installed = installed?.versionCode, locked = state.entry.versionCode, installer = installed?.installer)
-                    } else if (prev.state == "downloading" || prev.state == "verifying") {
+                    } else if ((prev.state == "downloading" || prev.state == "verifying") && installRunning) {
+                        // No session yet; in flight only while the install run is.
                         prev.copy(installed = installed?.versionCode, locked = state.entry.versionCode, installer = installed?.installer)
                     } else {
-                        store.record(state.pkg, "session-lost", to = state.entry.versionCode, lockSha = lockSha, detail = "session ${prev.sessionId} is gone; trying again")
+                        store.record(state.pkg, "session-lost", to = state.entry.versionCode, lockSha = lockSha, detail = if (prev.sessionId != null) "session ${prev.sessionId} is gone; trying again" else "the install run stopped in ${prev.state}; trying again")
                         base.copy(state = "behind", locked = state.entry.versionCode)
                     }
-                "failed" -> if (prev.locked == state.entry.versionCode) prev.copy(state = "behind", installer = installed?.installer) else base.copy(state = "behind", locked = state.entry.versionCode)
-                else -> base.copy(state = "behind", locked = state.entry.versionCode, since = keepSince("behind"))
+                "failed" -> if (prev.locked == state.entry.versionCode) prev.copy(state = "behind", installer = installed?.installer) else base.copy(state = "behind", locked = state.entry.versionCode, seenAt = now.toString())
+                else -> base.copy(state = "behind", locked = state.entry.versionCode, since = keepSince("behind"), seenAt = seenAtFor(prev, state.entry.versionCode, now),
+                    reason = if (state.rebuilt) "same version, other bytes in the lock: converging to the locked build" else prev?.reason?.takeIf { it.startsWith("bound reached") })
             }
             is AppState.Ahead -> base.copy(state = "ahead", locked = state.locked, reason = "installed ${state.installed} is newer than the lock's ${state.locked}", since = keepSince("ahead"))
             is AppState.NotOwner -> base.copy(state = "not-owner", locked = state.locked, reason = "installer of record is ${state.installer ?: "nobody"}; the host repairs this with a same-version reinstall naming the updater", since = keepSince("not-owner"))
@@ -169,15 +173,48 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         }
     }
 
+    /** The first sighting of this locked version in this zone, kept across checks; a new version starts a new clock. */
+    private fun seenAtFor(prev: Store.AppRecord?, locked: Long, now: Instant): String =
+        if (prev != null && prev.locked == locked && prev.seenAt != null) prev.seenAt else now.toString()
+
+    /** `held` while the version is younger than `minimumAgeHours` (design §11); null when there is no hold. */
+    private fun heldRecord(state: AppState.Behind, config: Config, prev: Store.AppRecord?, now: Instant, base: Store.AppRecord): Store.AppRecord? {
+        if (config.policy.minimumAgeHours <= 0) return null
+        if (prev?.state in setOf("downloading", "verifying", "installing", "waiting-constraints", "user-action")) return null
+        val seenAt = seenAtFor(prev, state.entry.versionCode, now)
+        val seen = runCatching { Instant.parse(seenAt) }.getOrDefault(now)
+        if (!Hold.held(seen, config.policy.minimumAgeHours, now)) return null
+        val opens = Hold.opensAt(seen, config.policy.minimumAgeHours)
+        // A check at the moment the window opens, so the update does not
+        // wait for the next periodic one.
+        Schedule.reconcile(applicationContext, Duration.between(now, opens).toMinutes().coerceAtLeast(1))
+        return base.copy(state = "held", locked = state.entry.versionCode, seenAt = seenAt, nextTry = opens.toString(),
+            reason = "held until $opens (minimumAgeHours ${config.policy.minimumAgeHours})", since = if (prev?.state == "held") prev.since else now.toString())
+    }
+
+    /**
+     * Once, when a state is entered: unverifiable, not-owner and missing are
+     * the host's to fix, and the phone says so (design §14). Current clears.
+     */
     private fun notify(context: Context, state: AppState, record: Store.AppRecord, prev: Store.AppRecord?) {
+        val entered = prev?.state != record.state || prev.reason != record.reason
         when (state) {
-            is AppState.Unverifiable -> if (prev?.state != "unverifiable" || prev.reason != record.reason) Notifications.failure(context, record.pkg, record.label, record.reason ?: "unverifiable")
+            is AppState.Unverifiable -> if (entered) Notifications.failure(context, record.pkg, record.label, record.reason ?: "unverifiable")
+            is AppState.NotOwner -> if (entered) Notifications.failure(context, record.pkg, record.label, "The updater is not this app's installer of record (${state.installer ?: "nobody"} is). Updates would ask for a tap; the laptop repairs this.")
+            is AppState.Missing -> if (entered) Notifications.failure(context, record.pkg, record.label, "Managed by the catalog but not installed in this zone; the laptop installs it.")
             is AppState.Current -> Notifications.clearFailure(context, record.pkg)
             else -> {}
         }
     }
 
     private val store get() = UpdaterApp.store(applicationContext)
+
+    /** Whether the install run is executing right now; a killed run leaves no session behind, and its records must not stay in flight. */
+    private val installRunning: Boolean by lazy {
+        runCatching {
+            androidx.work.WorkManager.getInstance(applicationContext).getWorkInfosForUniqueWork(Schedule.INSTALL).get().any { it.state == androidx.work.WorkInfo.State.RUNNING }
+        }.getOrDefault(false)
+    }
 
     private fun sha(text: String): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest(text.toByteArray()))
 

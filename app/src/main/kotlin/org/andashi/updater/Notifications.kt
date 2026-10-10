@@ -23,6 +23,7 @@ object Notifications {
     private const val ID_ACTION_BASE = 1000
     private const val ID_FAILURE_BASE = 2000
     const val ID_LOCK = 3000
+    const val ID_EXEMPTION = 3001
 
     fun ensureChannels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)
@@ -95,6 +96,22 @@ object Notifications {
     }
 
     fun clearLockProblem(context: Context) = context.getSystemService(NotificationManager::class.java).cancel(ID_LOCK)
+
+    /** The battery exemption is missing: its own notification, so a healthy lock check cannot clear it. */
+    fun exemptionMissing(context: Context) {
+        ensureChannels(context)
+        val n = Notification.Builder(context, CHANNEL_FAILURE)
+            .setContentTitle("Updates cannot run in the background")
+            .setContentText("The updater is not exempt from battery optimisation; the laptop grants it.")
+            .setStyle(Notification.BigTextStyle().bigText("The updater is not exempt from battery optimisation (cmd deviceidle whitelist). Nothing can be downloaded or installed in the background until the laptop grants it."))
+            .setSmallIcon(R.drawable.ic_stat_mark)
+            .setContentIntent(openStatus(context))
+            .setOngoing(true)
+            .build()
+        context.getSystemService(NotificationManager::class.java).notify(ID_EXEMPTION, n)
+    }
+
+    fun clearExemptionMissing(context: Context) = context.getSystemService(NotificationManager::class.java).cancel(ID_EXEMPTION)
 
     private fun openStatus(context: Context): PendingIntent = PendingIntent.getActivity(
         context, 0, Intent(context, StatusActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
