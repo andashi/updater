@@ -85,7 +85,23 @@ printf '\n== the soak can be scheduled and cancelled\n'
 ash am broadcast --user 0 -n "$PKG/.ProbeReceiver" -a org.andashi.updater.probe.SCHEDULE >/dev/null 2>&1
 # The periodic job itself, not the package name anywhere in the dump: the
 # one-time runs above leave history there too.
-check "periodic work is registered with JobScheduler" 'wait_for 30 "Periodic: interval=\+15m" sh -c "dumpsys jobscheduler | grep -A40 \"ProbeWorker#@androidx.work.systemjobscheduler@$PKG\""'
+periodic_registered() {
+  # WorkManager implements periods itself: JobScheduler sees a regular
+  # one-time job per period, never a PERIODIC flag (measured 2026-10-10).
+  # The one-time RUN above is expedited (*job*e/); the period's job is the
+  # only regular (*job*r/) ProbeWorker job, so that is what is looked for -
+  # not the package name anywhere in the dump.
+  local deadline=$(( $(date +%s) + 30 ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    # Captured first: under pipefail, grep -q closing the pipe early would
+    # fail the pipeline on the very match it found.
+    dump="$(ash dumpsys jobscheduler)"
+    grep -q "tag=\*job\*r/#ProbeWorker#@androidx.work.systemjobscheduler@$PKG" <<<"$dump" && return 0
+    sleep 2
+  done
+  return 1
+}
+check "periodic work is registered with JobScheduler" 'periodic_registered' 'ash dumpsys jobscheduler | grep -n "ProbeWorker" | head -8'
 ash am broadcast --user 0 -n "$PKG/.ProbeReceiver" -a org.andashi.updater.probe.CANCEL >/dev/null 2>&1
 sleep 3
 check "cancel clears the record" '[ -z "$(ash content query --user 0 --uri "content://$PKG.state/runs" 2>/dev/null | grep Row)" ]'

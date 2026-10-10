@@ -16,10 +16,19 @@ export SERIAL OVERLAY_DIR LOCK_OWNER ADB_SERIAL="$SERIAL"
 export ANDROID_SERIAL="$SERIAL"
 
 pass=0; fail=0
-check() { if eval "$2"; then printf '  ok    %s\n' "$1"; pass=$((pass+1)); else printf '  FAIL  %s\n' "$1"; fail=$((fail+1)); fi; }
+# $3, optional: a command whose output is printed when the check fails, so a
+# failed run in a pull request carries the state that failed it.
+check() {
+  if eval "$2"; then printf '  ok    %s\n' "$1"; pass=$((pass+1))
+  else printf '  FAIL  %s\n' "$1"; fail=$((fail+1)); [ -z "${3:-}" ] || eval "$3" 2>&1 | sed 's/^/        /' | head -20; fi
+}
 summary() { printf '\n%d ok, %d failed\n' "$pass" "$fail"; [ "$fail" = 0 ]; }
 
-ash() { adb -s "$SERIAL" shell "$@" | tr -d '\r'; }
+# stdin closed: adb shell would otherwise swallow the input of a `while
+# read` loop it runs inside of (running_secondary_users ended after one
+# user that way). Uploads go through `adb shell content write < file`
+# directly, never through ash.
+ash() { adb -s "$SERIAL" shell "$@" </dev/null | tr -d '\r'; }
 
 # The claim is about the shell (uid 2000). Taken from provisioning's
 # tests/e2e/identity.sh; the emulator's run.sh roots adbd on every start.
