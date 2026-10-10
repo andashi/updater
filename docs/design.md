@@ -390,7 +390,8 @@ the host has never had.
     "maxAgeDays": 14,
     "allowedHosts": ["raw.githubusercontent.com", "github.com",
                      "objects.githubusercontent.com", "release-assets.githubusercontent.com",
-                     "dist.torproject.org", "archive.torproject.org", "f-droid.org"]
+                     "dist.torproject.org", "archive.torproject.org", "f-droid.org",
+                     "developers.yubico.com"]
   },
   "schedule": { "checkEveryHours": 6, "requireUnmetered": false, "requireCharging": false },
   "policy": {
@@ -409,7 +410,12 @@ the host has never had.
 
 Generated per zone from the catalog: `managed` is every app of that zone's
 `profiles` with a source the lock covers (`obtainium`, `fdroid`,
-`torproject`) plus the updater itself; `signer` is `apks/certs/<pkg>.cert`.
+`torproject`, `direct` - a vendor's own download directory with a detached
+signature, provisioning#27) plus the updater itself; `signer` is
+`apks/certs/<pkg>.cert`. `allowedHosts` is generated from a curated list in
+the distribution's configuration, never from the lock's URLs, and `make
+check` refuses a lock whose URLs leave that list: the lock must not be able
+to widen where a phone connects (§10).
 `checks.netFalse` is every `net: false` app of the zone. A hand-edited file
 fails `make check` against the generator, as the launcher files do.
 
