@@ -156,7 +156,7 @@ printf '\n== not owner: a shell install without -i strips the role; the host rep
 adb -s "$SERIAL" install -r --user 0 "$WORK/probe-4.apk" >/dev/null 2>&1
 lock "2026-10-10T05:00:00Z" "$(entry $PROBE 4 "$WORK/probe-4.apk" probe-4.apk)" "$(entry $UPD 1 "$WORK/updater-1.apk" updater-1.apk)"
 check_now
-check "current is current whoever installed it" 'wait_state $PROBE current 60'
+check "the stripped role is reported at once, version match or not" 'wait_state $PROBE not-owner 60 && app_field $PROBE reason | grep -q nobody'
 serve probe-4.apk probe-5.apk   # never served; the entry only has to exist for "behind"
 lock "2026-10-10T06:00:00Z" "$(entry $PROBE 5 "$WORK/probe-4.apk" probe-5.apk)" "$(entry $UPD 1 "$WORK/updater-1.apk" updater-1.apk)"
 check_now

@@ -272,7 +272,7 @@ Per managed package, the state is one of:
 | `ahead` | installed > lock; somebody updated past the lock, or the lock went back | warning, never downgraded |
 | `downloading` / `verifying` / `installing` / `waiting-constraints` | in flight, with the session id | pending |
 | `user-action` | the system wants a tap (`STATUS_PENDING_USER_ACTION`); notification posted with the system's intent — never an activity start from the background, which GrapheneOS blocks ("Background activity launch blocked", logged for Obtainium on 2026-10-02) | **action needed** |
-| `not-owner` | installer of record is somebody else, or null after a shell install without `-i`; a silent update is impossible | warning; the host fixes it by a same-version reinstall with `-i` (§6) |
+| `not-owner` | installer of record is somebody else, or null after a shell install without `-i` - reported whether or not an update is due, because the next one would prompt | warning; the host fixes it now, silently, by a same-version reinstall with `-i` (§6) |
 | `failed` | with the reason, attempt count, next retry | failure after the retry budget |
 | `missing` | managed, not installed in this user | warning (the host's job) |
 | `unverifiable` | no lock entry for this ABI, or lock and pin disagree | **failure** |
