@@ -35,6 +35,8 @@ class Store(context: Context) {
         val sessionId: Int? = null,
         val since: String,
         val lastError: String? = null,
+        /** When this zone first saw [locked] in a valid lock: the clock of `minimumAgeHours` (design §11). */
+        val seenAt: String? = null,
     )
 
     @Serializable
@@ -87,8 +89,12 @@ class Store(context: Context) {
         val history: List<HistoryEvent> = emptyList(),
     )
 
+    /** The last ingest of each document: the config's, and in host-only mode the lock's, kept apart so one cannot erase the other. */
     @Serializable
-    data class Diagnostics(val configSha256: String? = null, val success: Boolean = false, val error: String? = null, val at: String? = null)
+    data class Diagnostics(
+        val configSha256: String? = null, val success: Boolean = false, val error: String? = null, val at: String? = null,
+        val lockSha256: String? = null, val lockSuccess: Boolean? = null, val lockError: String? = null, val lockAt: String? = null,
+    )
 
     // ---- raw documents the host wrote or the fetch cached --------------------
 

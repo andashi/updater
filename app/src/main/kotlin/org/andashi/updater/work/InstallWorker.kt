@@ -43,7 +43,7 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         } catch (e: Exception) {
             // Without the exemption this is where it ends (measured 2026-10-09).
             store.update { it.copy(exemption = "missing", lastCheckError = "foreground service refused: ${e.message}") }
-            Notifications.lockProblem(context, "The updater may not run in the background: ${e.javaClass.simpleName}. The host must grant the battery exemption.")
+            Notifications.exemptionMissing(context)
             return@withContext Result.failure()
         }
         val config = store.configText()?.let { runCatching { Config.parse(it, Debug.cleartextLocalhost(applicationContext)) }.getOrNull() } ?: return@withContext Result.success()
@@ -89,7 +89,7 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         }
 
         store.setApp(prev.copy(state = "downloading", label = label, locked = entry.versionCode, since = Instant.now().toString(), lastError = null))
-        store.record(entry.pkg, "download-started", from = s.installed, to = entry.versionCode, lockSha = lockSha)
+        store.record(entry.pkg, "download-started", from = s.installed, to = entry.versionCode, lockSha = lockSha, detail = if (s.rebuilt) "same version, other bytes in the lock" else null)
         var download: Fetcher.Download = Fetcher.Download.Failed("no url")
         val tried = mutableListOf<String>()
         for (url in entry.urls) {
@@ -109,11 +109,23 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                 store.setApp(store.app(entry.pkg)!!.copy(state = "current", installed = out.versionCode, sessionId = null, since = Instant.now().toString(), reason = null))
                 store.record(entry.pkg, "already-current", to = out.versionCode, lockSha = lockSha, detail = "another zone got there first")
             }
-            is SessionInstaller.Outcome.Committed -> {
+            is SessionInstaller.Outcome.Ahead -> {
                 file.delete()
+                store.setApp(store.app(entry.pkg)!!.copy(state = "ahead", installed = out.versionCode, sessionId = null, since = Instant.now().toString(), reason = "installed ${out.versionCode} is newer than the lock's ${entry.versionCode}"))
+                store.record(entry.pkg, "ahead", to = out.versionCode, lockSha = lockSha, detail = "something newer arrived meanwhile; never downgraded")
+            }
+            is SessionInstaller.Outcome.Ready -> {
+                file.delete()
+                // The record first, the commit second: the receiver's callback
+                // must find the session it reports on.
                 val state = if (out.waitingForConstraints) "waiting-constraints" else "installing"
                 store.setApp(store.app(entry.pkg)!!.copy(state = state, sessionId = out.sessionId, since = Instant.now().toString(), reason = null))
                 store.record(entry.pkg, "committed", from = s.installed, to = entry.versionCode, lockSha = lockSha, detail = "session ${out.sessionId}${if (out.waitingForConstraints) ", waiting for a quiet moment" else ""}")
+                try {
+                    out.commit()
+                } catch (e: Exception) {
+                    return fail("commit: ${e.javaClass.simpleName}: ${e.message}")
+                }
                 if (!out.waitingForConstraints) awaitResult(store, entry.pkg, out.sessionId)
             }
         }
