@@ -67,6 +67,9 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             setForeground(Notifications.foregroundInfo(context, "Updating ${s.entry.label.ifEmpty { s.pkg }} (${i + 1}/${due.size})"))
             one(context, store, config, s, lockSha, fetcher, installer, packages)
         }
+        // Sessions the system is holding for a quiet moment report through
+        // the receiver; a delayed check reads the package manager regardless.
+        if (store.state().apps.any { it.state == "waiting-constraints" }) Schedule.reconcile(context, RECONCILE_AFTER_MINUTES)
         Result.success()
     }
 
@@ -129,5 +132,6 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
 
     companion object {
         const val RESULT_WAIT_MS = 10 * 60 * 1000L
+        const val RECONCILE_AFTER_MINUTES = 5L
     }
 }

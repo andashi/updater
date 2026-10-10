@@ -72,6 +72,9 @@ class AndroidPackages(private val context: Context) : Packages {
         return sigs.map { Hex.encode(MessageDigest.getInstance("SHA-256").digest(it.toByteArray())) }.toSet()
     }
 
+    /** Whether an install session of this app still exists, committed or not. */
+    fun sessionExists(sessionId: Int): Boolean = pm.packageInstaller.getSessionInfo(sessionId) != null
+
     /** The device's primary ABI, the one the lock's entries are chosen by. */
     val abi: String get() = android.os.Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown"
 

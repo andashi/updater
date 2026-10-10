@@ -78,6 +78,9 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
 
         val due = records.any { it.state == "behind" && Backoff.due(it.nextTry?.let { t -> runCatching { Instant.parse(t) }.getOrNull() }, now) }
         if (due && exempt) Schedule.install(context, trigger)
+        // While the system holds a session for a quiet moment, keep looking
+        // at the package manager at intervals, whatever the receiver does.
+        if (records.any { it.state == "waiting-constraints" }) Schedule.reconcile(context, RECONCILE_EVERY_MINUTES)
         return Result.success()
     }
 
@@ -145,7 +148,17 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             }
             is AppState.Behind -> when (prev?.state) {
                 "downloading", "verifying", "installing", "waiting-constraints", "user-action" ->
-                    prev.copy(installed = installed?.versionCode, locked = state.entry.versionCode, installer = installed?.installer)
+                    // In flight only while the session the record names still
+                    // exists; a session the system dropped (reboot, abandon,
+                    // timeout the receiver never heard) goes back to behind.
+                    if (prev.sessionId != null && packages.sessionExists(prev.sessionId)) {
+                        prev.copy(installed = installed?.versionCode, locked = state.entry.versionCode, installer = installed?.installer)
+                    } else if (prev.state == "downloading" || prev.state == "verifying") {
+                        prev.copy(installed = installed?.versionCode, locked = state.entry.versionCode, installer = installed?.installer)
+                    } else {
+                        store.record(state.pkg, "session-lost", to = state.entry.versionCode, lockSha = lockSha, detail = "session ${prev.sessionId} is gone; trying again")
+                        base.copy(state = "behind", locked = state.entry.versionCode)
+                    }
                 "failed" -> if (prev.locked == state.entry.versionCode) prev.copy(state = "behind", installer = installed?.installer) else base.copy(state = "behind", locked = state.entry.versionCode)
                 else -> base.copy(state = "behind", locked = state.entry.versionCode, since = keepSince("behind"))
             }
@@ -170,5 +183,6 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
 
     companion object {
         const val MAX_LOCK_BYTES = 4L * 1024 * 1024
+        const val RECONCILE_EVERY_MINUTES = 30L
     }
 }

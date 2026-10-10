@@ -250,6 +250,13 @@ package stayed exactly as it was. So the first install, the device-wide
 upgrade and the same-version repair all carry `--user N` for a user that
 has the package.
 
+**`-i` names a package the user must have.** Measured 2026-10-10 by the
+provisioning side (emulator-5558, shell): a reinstall with `-i <updater>`
+run as a user that does not hold the updater (Work) left the installer
+null; the same through a user that holds it (Cloud) took. So the updater
+goes into every zone before any app, and a repair runs through a user that
+holds both the app and the updater.
+
 **The shell strips the installer of record, silently.** Measured 2026-10-02:
 `adb install -r --user 0 <apk>` *without* `-i` on a package the updater owns
 (with `--update-ownership`) succeeds, prompts nothing, and resets the
@@ -446,7 +453,8 @@ fails `make check` against the generator, as the launcher files do.
   ],
   "foreign": [ { "pkg": "com.example.sideloaded", "installer": "dev.imranr.obtainium" } ],
   "checks": { "netFalse": { "ok": ["org.andashi.home"], "violations": ["helium314.keyboard"] } },
-  "history": [ { "at": "…", "pkg": "…", "from": 7000, "to": 7010, "lock": "…", "result": "success" } ]
+  "history": [ { "at": "…", "pkg": "…", "event": "updated", "from": 7000, "to": 7010, "lock": "…",
+                 "detail": "confirmed by the package manager", "result": "success" } ]
 }
 ```
 

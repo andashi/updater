@@ -22,14 +22,14 @@ PORT=18080
 WORK="$(mktemp -d)"; SERVE="$WORK/serve"; mkdir -p "$SERVE"
 bt="$(ls -d "${ANDROID_HOME:-/opt/android-sdk}"/build-tools/* | sort -V | tail -1)"
 
-printf '== build: the updater twice, the probe four times\n'
+printf '== build: the updater twice, the probe five times\n'
 build() {   # $1 = module, $2 = property, $3 = versionCode, $4 = output name
   ( cd "$ROOT" && ./gradlew -q ":$1:assembleDebug" "-P$2=$3" >/dev/null 2>&1 ) || { echo "build of $1 v$3 failed" >&2; exit 2; }
   cp "$ROOT/$1/build/outputs/apk/debug/$1-debug.apk" "$WORK/$4"
 }
 build app updaterVersionCode 1 updater-1.apk
 build app updaterVersionCode 2 updater-2.apk
-for v in 1 2 3 4; do build probe probeVersionCode "$v" "probe-$v.apk"; done
+for v in 1 2 3 4 5; do build probe probeVersionCode "$v" "probe-$v.apk"; done
 # Tampered: the lock will name probe-3's hash and size while this is what
 # the URL serves - the same size, so the size gate passes and the hash gate
 # is the one that has to catch it. Bytes in the middle of the file flipped.
@@ -173,6 +173,23 @@ check_now
 check "updater 1 -> 2 installed silently" 'wait_vc $UPD 2 180 && [ "$(installer_of $UPD)" = "$UPD" ]'
 check "the new version reports itself and the history survived the restart" '[ "$(wait_for 60 "\"updaterVersionCode\":2" content query --user 0 --uri "content://$UPD.state/state" | sed -n "s/^Row: 0 json=//p" | jq -r .updaterVersionCode)" = 2 ] && state | jq -e ".history[] | select(.pkg==\"$UPD\" and .event==\"updated\" and .to==2)" >/dev/null'
 check "the probe is still current under the new updater" 'wait_state $PROBE current 60'
+
+printf '\n== install constraints: the commit waits for a quiet moment, then lands and is reconciled\n'
+# The production policy: not in a call, not in the foreground. The probe is
+# neither, but the system checks its constraints at its own interval -
+# measured 2026-10-10 on this emulator: about two minutes between commit
+# and install. The receiver then moves the record, and a delayed reconcile
+# reads the package manager regardless.
+jq '.policy.constraints = {notInCall:true, notForeground:true, boundHours:24}' "$WORK/updater.json" > "$WORK/updater-constrained.json"
+adb -s "$SERIAL" shell content write --user 0 --uri "content://$UPD.ingest/updater.json" < "$WORK/updater-constrained.json"
+check "the constrained config is accepted" '[ "$(wait_for 30 "$(sha "$WORK/updater-constrained.json")" content query --user 0 --uri "content://$UPD.state/diagnostics" | sed -n "s/^Row: 0 json=//p" | jq -r .success)" = true ]'
+sleep 35   # the silent-update throttle, see above
+serve probe-5.apk probe-5.apk
+lock "2026-10-10T09:00:00Z" "$(entry $PROBE 5 "$WORK/probe-5.apk" probe-5.apk)" "$(entry $UPD 2 "$WORK/updater-2.apk" updater-2.apk)"
+check_now
+check "the session is committed and waits" 'wait_state $PROBE waiting-constraints 120' 'state | jq -c ".apps[] | select(.pkg==\"$PROBE\")"'
+check "probe 4 -> 5 lands within five minutes" 'wait_vc $PROBE 5 300' 'state | jq -c ".apps[] | select(.pkg==\"$PROBE\")"'
+check "the state follows the package manager" 'wait_state $PROBE current 60 && state | jq -e ".history[] | select(.pkg==\"$PROBE\" and .event==\"updated\" and .to==5 and .result==\"success\")" >/dev/null' 'state | jq -c "{apps: [.apps[] | select(.pkg==\"$PROBE\")], history: .history[-5:]}"'
 
 printf '\n== the gates, from the installed manifest\n'
 manifest="$("$bt/aapt2" dump xmltree --file AndroidManifest.xml "$WORK/updater-2.apk")"
