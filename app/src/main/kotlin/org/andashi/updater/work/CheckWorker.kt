@@ -148,7 +148,7 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                 if (prev != null && prev.state != "current") store.record(state.pkg, "confirmed-current", from = prev.installed, to = state.versionCode, lockSha = lockSha)
                 base.copy(state = "current", locked = state.versionCode, since = keepSince("current"))
             }
-            is AppState.Behind -> if (heldRecord(state, config, prev, now, base) != null) heldRecord(state, config, prev, now, base)!! else when (prev?.state) {
+            is AppState.Behind -> heldRecord(state, config, prev, now, base) ?: when (prev?.state) {
                 "downloading", "verifying", "installing", "waiting-constraints", "user-action" ->
                     // In flight only while the session the record names still
                     // exists; a session the system dropped (reboot, abandon,
