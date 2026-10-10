@@ -17,4 +17,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "updater"
-include(":probe")
+include(":probe", ":core")
