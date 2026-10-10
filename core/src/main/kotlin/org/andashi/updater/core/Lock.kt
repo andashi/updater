@@ -109,7 +109,10 @@ data class LockEntry(
         if (size > policy.maxBytes) problems += "size $size exceeds the limit of ${policy.maxBytes} bytes"
         if (urls.isEmpty()) problems += "no urls"
         for (u in urls) {
-            val why = Urls.refuse(u, policy.allowedHosts, policy.cleartextLocalhost)
+            // In host-only mode nothing is fetched, so a URL is checked for
+            // shape (https, no user info) but not against an allowlist the
+            // config may not even carry.
+            val why = Urls.refuse(u, if (policy.fetches) policy.allowedHosts else null, policy.cleartextLocalhost)
             if (why != null) problems += "url $u: $why"
         }
         return problems
@@ -129,6 +132,8 @@ data class LockPolicy(
     val maxBytes: Long = 512L * 1024 * 1024,
     /** Debug builds only: `http://localhost` for the emulator e2e (see [Urls.refuse]). */
     val cleartextLocalhost: Boolean = false,
+    /** False in host-only mode (0002): the phone fetches neither lock nor APKs, so URL hosts are not checked against an allowlist. */
+    val fetches: Boolean = true,
 )
 
 class LockFormatException(message: String) : Exception(message)

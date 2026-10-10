@@ -39,9 +39,14 @@ class ConfigTest {
         assertEquals(setOf("raw.githubusercontent.com", "github.com"), c.lockPolicy.allowedHosts)
     }
 
-    @Test fun `host-only needs no url and no hosts`() {
+    @Test fun `host-only needs no url and no hosts, and its lock policy checks URL shape but no allowlist`() {
         val c = Config.parse(config(mode = "host-only", url = "", hosts = ""))
         assertTrue(c.hostOnly)
+        assertFalse(c.lockPolicy.fetches)
+        val entry = Fixtures.entry()   // a github.com URL, with an empty allowlist
+        assertTrue(entry.validate(c.lockPolicy).isEmpty())
+        assertTrue(entry.copy(urls = listOf("http://github.com/x.apk")).validate(c.lockPolicy).any { it.contains("not https") })
+        assertTrue(entry.validate(Config.parse(config()).lockPolicy.copy(allowedHosts = emptySet())).any { it.contains("not allow-listed") })
     }
 
     @Test fun `refuses an unknown schema version`() =

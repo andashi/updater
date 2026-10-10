@@ -18,7 +18,7 @@ object Urls {
      * build never sets it, and the network security config refuses
      * cleartext there a second time.
      */
-    fun refuse(url: String, allowedHosts: Set<String>, cleartextLocalhost: Boolean = false): String? {
+    fun refuse(url: String, allowedHosts: Set<String>?, cleartextLocalhost: Boolean = false): String? {
         val uri = try {
             URI(url)
         } catch (_: URISyntaxException) {
@@ -30,7 +30,9 @@ object Urls {
         if (uri.userInfo != null) return "user info in URL"
         if (!loopback && uri.port != -1 && uri.port != 443) return "port ${uri.port} is not 443"
         if (uri.fragment != null) return "fragment in URL"
-        if (host !in allowedHosts.map { it.lowercase() }) return "host '$host' is not allow-listed"
+        // A null allowlist means "shape only": host-only mode, where nothing
+        // is fetched (LockPolicy.fetches). An empty allowlist refuses every host.
+        if (allowedHosts != null && host !in allowedHosts.map { it.lowercase() }) return "host '$host' is not allow-listed"
         return null
     }
 

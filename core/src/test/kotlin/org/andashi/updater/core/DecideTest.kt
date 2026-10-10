@@ -45,9 +45,9 @@ class DecideTest {
         assertEquals(AppState.NotOwner("org.example.app", null, 10, 11), decide(installed(versionCode = 10, installer = null)))
     }
 
-    @Test fun `not owner when another package holds update ownership, even as installer of record`() {
+    @Test fun `not owner when another package holds update ownership, even as installer of record - both facts carried`() {
         val owned = InstalledPackage("org.example.app", 10, setOf(Fixtures.SIGNER_A), self, true, Fixtures.SHA_A, updateOwner = "dev.imranr.obtainium")
-        assertEquals(AppState.NotOwner("org.example.app", "dev.imranr.obtainium", 10, 11), decide(owned))
+        assertEquals(AppState.NotOwner("org.example.app", self, 10, 11, updateOwner = "dev.imranr.obtainium"), decide(owned))
         val own = InstalledPackage("org.example.app", 10, setOf(Fixtures.SIGNER_A), self, true, Fixtures.SHA_A, updateOwner = self)
         assertTrue(decide(own) is AppState.Behind)
     }

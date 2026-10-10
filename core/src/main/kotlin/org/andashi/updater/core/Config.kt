@@ -67,7 +67,7 @@ data class Config(
     val hostOnly: Boolean get() = lock.mode == "host-only"
 
     /** Debug builds pass true (the emulator e2e); a release build cannot, so a lock or config naming `http://localhost` is refused there. */
-    fun lockPolicy(cleartextLocalhost: Boolean = false): LockPolicy = LockPolicy(allowedHosts = lock.allowedHosts.toSet(), cleartextLocalhost = cleartextLocalhost)
+    fun lockPolicy(cleartextLocalhost: Boolean = false): LockPolicy = LockPolicy(allowedHosts = lock.allowedHosts.toSet(), cleartextLocalhost = cleartextLocalhost, fetches = !hostOnly)
     val lockPolicy: LockPolicy get() = lockPolicy(false)
 
     fun pinFor(pkg: String): String? = managed.firstOrNull { it.pkg == pkg }?.signer

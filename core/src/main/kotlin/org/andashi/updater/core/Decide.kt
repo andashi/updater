@@ -17,8 +17,13 @@ sealed class AppState {
     /** Installed is newer than the lock. Never downgraded; reported. */
     data class Ahead(override val pkg: String, val installed: Long, val locked: Long) : AppState()
 
-    /** Somebody else is installer of record (or nobody), whether or not an update is due: a silent update would be impossible. The host repairs it. */
-    data class NotOwner(override val pkg: String, val installer: String?, val installed: Long, val locked: Long) : AppState()
+    /**
+     * A silent update would be impossible, whether or not one is due: the
+     * installer of record is somebody else or nobody, or (Android 14+)
+     * another package holds update ownership. Both facts are carried, so the
+     * host repairs the right one.
+     */
+    data class NotOwner(override val pkg: String, val installer: String?, val installed: Long, val locked: Long, val updateOwner: String? = null) : AppState()
 
     /** Managed, not installed in this user. The updater never first-installs; the host does. */
     data class Missing(override val pkg: String) : AppState()
@@ -59,10 +64,10 @@ object Decide {
             // Ownership is reported even while the version matches: the next
             // update would prompt, and the host can repair it now, silently,
             // with a same-version reinstall naming the updater (design §6).
-            installed.installer != self -> AppState.NotOwner(pkg, installed.installer, installed.versionCode, entry.versionCode)
-            // Android 14+: update ownership is a second fact. Held by another
-            // package, the system prompts although we are installer of record.
-            installed.updateOwner != null && installed.updateOwner != self -> AppState.NotOwner(pkg, installed.updateOwner, installed.versionCode, entry.versionCode)
+            installed.installer != self || (installed.updateOwner != null && installed.updateOwner != self) ->
+                // Android 14+: update ownership is a second fact. Held by another
+                // package, the system prompts although we are installer of record.
+                AppState.NotOwner(pkg, installed.installer, installed.versionCode, entry.versionCode, installed.updateOwner)
             installed.versionCode < entry.versionCode -> AppState.Behind(pkg, installed.versionCode, entry)
             // Same version: current only with the lock's bytes. A rebuild the
             // maintainer took through review converges; an APK that cannot
