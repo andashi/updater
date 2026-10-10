@@ -15,6 +15,10 @@ data class InstalledPackage(
     val installer: String?,
     /** Whether `android.permission.INTERNET` is granted - for the `netFalse` check, nothing else. */
     val holdsInternet: Boolean,
+    /** SHA-256 of the installed base APK's bytes, lower-case hex; null when the file could not be read, which is a reason to refuse, not to assume. */
+    val apkSha256: String? = null,
+    /** Android 14+ update owner (`InstallSourceInfo.updateOwnerPackageName`), null when nobody holds it. Another owner means a silent update is impossible even with the installer of record. */
+    val updateOwner: String? = null,
 )
 
 /** What `getPackageArchiveInfo` says about a downloaded file before any session exists. */

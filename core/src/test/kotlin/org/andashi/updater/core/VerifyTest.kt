@@ -40,8 +40,9 @@ class VerifyTest {
     @Test fun `before commit - proceed only when the session bytes match and the package is still behind`() {
         assertEquals(Verify.Commit.Proceed, Verify.beforeCommit(e, Fixtures.SHA_A, installed(versionCode = 10)))
         assertTrue(Verify.beforeCommit(e, Fixtures.SHA_B, installed(versionCode = 10)) is Verify.Commit.Refused)
-        assertEquals(Verify.Commit.AlreadyCurrent(11), Verify.beforeCommit(e, Fixtures.SHA_A, installed(versionCode = 11)))
-        assertEquals(Verify.Commit.AlreadyCurrent(12), Verify.beforeCommit(e, Fixtures.SHA_A, installed(versionCode = 12)))
+        assertEquals(Verify.Commit.AlreadyCurrent(11), Verify.beforeCommit(e, Fixtures.SHA_A, installed(versionCode = 11, apkSha256 = Fixtures.SHA_A)))
+        assertEquals(Verify.Commit.Proceed, Verify.beforeCommit(e, Fixtures.SHA_A, installed(versionCode = 11, apkSha256 = Fixtures.SHA_B)))
+        assertEquals(Verify.Commit.Ahead(12), Verify.beforeCommit(e, Fixtures.SHA_A, installed(versionCode = 12)))
         assertTrue(Verify.beforeCommit(e, Fixtures.SHA_A, null) is Verify.Commit.Refused)
     }
 }

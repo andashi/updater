@@ -87,14 +87,15 @@ data class Lock(
 @Serializable
 data class LockEntry(
     val pkg: String,
-    val label: String = "",
-    val version: String = "",
+    val label: String,
+    val version: String,
     val versionCode: Long,
     val abi: String,
     val sha256: String,
     val size: Long,
     val signer: String,
     val urls: List<String>,
+    /** The host inventory's path for this APK; meaningless on the phone and therefore the one optional key. */
     @SerialName("file") val file: String = "",
 ) {
     fun validate(policy: LockPolicy): List<String> {

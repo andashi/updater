@@ -32,4 +32,13 @@ class BackoffTest {
         assertTrue(Backoff.due(now.minusSeconds(1), now))
         assertFalse(Backoff.due(now.plusSeconds(1), now))
     }
+
+    @Test fun `a hold opens after the minimum age and never before`() {
+        val seen = now.minus(Duration.ofHours(10))
+        assertTrue(Hold.held(seen, 24, now))
+        assertFalse(Hold.held(seen, 10, now))
+        assertFalse(Hold.held(seen, 0, now))
+        assertEquals(seen.plus(Duration.ofHours(24)), Hold.opensAt(seen, 24))
+        assertEquals(seen, Hold.opensAt(seen, -5))
+    }
 }

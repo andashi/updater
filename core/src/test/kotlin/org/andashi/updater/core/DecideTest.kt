@@ -15,11 +15,21 @@ class DecideTest {
     private fun decide(installed: InstalledPackage?, lock: Lock? = lock(entry(versionCode = 11)), managed: Config.ManagedApp = managed()) =
         Decide.state(managed, lock, abi, installed, self)
 
-    @Test fun `current when installed equals the lock`() =
+    @Test fun `current when installed equals the lock in version and bytes`() =
         assertEquals(AppState.Current("org.example.app", 11), decide(installed(versionCode = 11)))
 
-    @Test fun `current whoever installed it - the installer matters only when there is work`() =
-        assertEquals(AppState.Current("org.example.app", 11), decide(installed(versionCode = 11, installer = "dev.imranr.obtainium")))
+    @Test fun `the same version with other bytes is behind, marked as a rebuild`() {
+        val s = decide(installed(versionCode = 11, apkSha256 = Fixtures.SHA_B))
+        assertTrue(s is AppState.Behind && s.rebuilt)
+    }
+
+    @Test fun `the same version whose APK cannot be hashed is unverifiable, never current`() {
+        val s = decide(installed(versionCode = 11, apkSha256 = null))
+        assertTrue(s is AppState.Unverifiable && s.reason.contains("hashed"))
+    }
+
+    @Test fun `not owner even when the version matches - the next update would prompt`() =
+        assertEquals(AppState.NotOwner("org.example.app", "dev.imranr.obtainium", 11, 11), decide(installed(versionCode = 11, installer = "dev.imranr.obtainium")))
 
     @Test fun `behind when the lock is newer and the updater owns the package`() {
         val s = decide(installed(versionCode = 10))
@@ -33,6 +43,13 @@ class DecideTest {
     @Test fun `not owner when somebody else or nobody is installer of record and an update is due`() {
         assertEquals(AppState.NotOwner("org.example.app", "dev.imranr.obtainium", 10, 11), decide(installed(versionCode = 10, installer = "dev.imranr.obtainium")))
         assertEquals(AppState.NotOwner("org.example.app", null, 10, 11), decide(installed(versionCode = 10, installer = null)))
+    }
+
+    @Test fun `not owner when another package holds update ownership, even as installer of record`() {
+        val owned = InstalledPackage("org.example.app", 10, setOf(Fixtures.SIGNER_A), self, true, Fixtures.SHA_A, updateOwner = "dev.imranr.obtainium")
+        assertEquals(AppState.NotOwner("org.example.app", "dev.imranr.obtainium", 10, 11), decide(owned))
+        val own = InstalledPackage("org.example.app", 10, setOf(Fixtures.SIGNER_A), self, true, Fixtures.SHA_A, updateOwner = self)
+        assertTrue(decide(own) is AppState.Behind)
     }
 
     @Test fun `missing when not installed - the updater never first-installs`() =
@@ -55,7 +72,7 @@ class DecideTest {
     }
 
     @Test fun `a package with two signers is unverifiable`() {
-        val two = InstalledPackage("org.example.app", 10, setOf(Fixtures.SIGNER_A, Fixtures.SIGNER_B), self, true)
+        val two = InstalledPackage("org.example.app", 10, setOf(Fixtures.SIGNER_A, Fixtures.SIGNER_B), self, true, Fixtures.SHA_A)
         assertTrue(decide(two) is AppState.Unverifiable)
     }
 

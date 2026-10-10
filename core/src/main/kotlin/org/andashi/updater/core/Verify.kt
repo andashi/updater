@@ -45,14 +45,20 @@ object Verify {
      */
     sealed class Commit {
         object Proceed : Commit()
+        /** Exactly the lock's version and bytes are installed: another zone got there first. */
         data class AlreadyCurrent(val versionCode: Long) : Commit()
+        /** Something newer than the lock is installed meanwhile: never downgraded, reported as ahead. */
+        data class Ahead(val versionCode: Long) : Commit()
         data class Refused(val reason: String) : Commit()
     }
 
     fun beforeCommit(entry: LockEntry, sessionSha256: String, installedNow: InstalledPackage?): Commit {
         if (sessionSha256 != entry.sha256) return Commit.Refused("bytes written to the session hash to $sessionSha256, lock says ${entry.sha256}")
         if (installedNow == null) return Commit.Refused("package is no longer installed; the updater never first-installs")
-        if (installedNow.versionCode >= entry.versionCode) return Commit.AlreadyCurrent(installedNow.versionCode)
+        if (installedNow.versionCode > entry.versionCode) return Commit.Ahead(installedNow.versionCode)
+        // The same version with the lock's bytes is current; with other bytes
+        // (a rebuild) the session proceeds and replaces it.
+        if (installedNow.versionCode == entry.versionCode && installedNow.apkSha256 == entry.sha256) return Commit.AlreadyCurrent(installedNow.versionCode)
         return Commit.Proceed
     }
 }

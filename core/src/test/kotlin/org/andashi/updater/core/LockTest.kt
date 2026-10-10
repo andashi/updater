@@ -37,6 +37,11 @@ class LockTest {
         assertEquals(10, l.entries[0].versionCode)
     }
 
+    @Test fun `refuses an entry without label or version - a lost key breaks parsing`() {
+        assertTrue(refused(lock(entries = arrayOf(entry().replace("\"label\":\"App\",", "")))).startsWith("not a lock"))
+        assertTrue(refused(lock(entries = arrayOf(entry().replace("\"version\":\"1.0\",", "")))).startsWith("not a lock"))
+    }
+
     @Test fun `refuses a lockVersion it does not understand`() =
         assertTrue(refused(lock(entries = arrayOf(entry()), version = 2)).contains("lockVersion 2"))
 
@@ -117,8 +122,8 @@ object Fixtures {
 
     fun lock(vararg entries: LockEntry, generated: String = "2026-10-01T05:21:03Z") = Lock(1, generated, entries.toList())
 
-    fun installed(pkg: String = "org.example.app", versionCode: Long = 10, signer: String = SIGNER_A, installer: String? = "org.andashi.updater", internet: Boolean = true) =
-        InstalledPackage(pkg, versionCode, setOf(signer), installer, internet)
+    fun installed(pkg: String = "org.example.app", versionCode: Long = 10, signer: String = SIGNER_A, installer: String? = "org.andashi.updater", internet: Boolean = true, apkSha256: String? = SHA_A) =
+        InstalledPackage(pkg, versionCode, setOf(signer), installer, internet, apkSha256)
 
     fun managed(pkg: String = "org.example.app", signer: String = SIGNER_A) = Config.ManagedApp(pkg, "App", signer)
 

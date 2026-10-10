@@ -26,3 +26,16 @@ object Backoff {
     /** True when a package in `failed` may be tried now. */
     fun due(nextTry: Instant?, now: Instant): Boolean = nextTry == null || !now.isBefore(nextTry)
 }
+
+/**
+ * `minimumAgeHours` (design §11): an update is held until the version has
+ * been seen in a valid lock for that long. The clock is this zone's own
+ * first sighting, recorded per package, never a date the phone cannot
+ * verify.
+ */
+object Hold {
+    /** When the window opens; equal to [firstSeen] when there is no window. */
+    fun opensAt(firstSeen: Instant, minimumAgeHours: Int): Instant = firstSeen.plus(Duration.ofHours(minimumAgeHours.toLong().coerceAtLeast(0)))
+
+    fun held(firstSeen: Instant, minimumAgeHours: Int, now: Instant): Boolean = now.isBefore(opensAt(firstSeen, minimumAgeHours))
+}
