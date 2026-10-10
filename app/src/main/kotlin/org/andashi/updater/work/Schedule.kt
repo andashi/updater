@@ -23,6 +23,7 @@ object Schedule {
     const val CHECK_PERIODIC = "check-periodic"
     const val CHECK_NOW = "check-now"
     const val INSTALL = "install"
+    const val RECONCILE = "reconcile"
     const val KEY_TRIGGER = "trigger"
 
     fun apply(context: Context, config: Config) {
@@ -50,6 +51,24 @@ object Schedule {
             OneTimeWorkRequestBuilder<CheckWorker>()
                 .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
                 .setInputData(workDataOf(KEY_TRIGGER to trigger))
+                .build(),
+        )
+    }
+
+    /**
+     * A check after a delay, for sessions the system holds until a quiet
+     * moment (install constraints): their result arrives at the receiver,
+     * but a receiver can be lost with its process, and a state that says
+     * "waiting" for a package the package manager already updated is the
+     * proxy the design forbids. REPLACE: one pending reconcile at a time.
+     */
+    fun reconcile(context: Context, delayMinutes: Long) {
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            RECONCILE,
+            ExistingWorkPolicy.REPLACE,
+            OneTimeWorkRequestBuilder<CheckWorker>()
+                .setInitialDelay(delayMinutes, TimeUnit.MINUTES)
+                .setInputData(workDataOf(KEY_TRIGGER to "reconcile"))
                 .build(),
         )
     }

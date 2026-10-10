@@ -63,6 +63,8 @@ class Store(context: Context) {
         val to: Long? = null,
         val lock: String? = null,
         val detail: String? = null,
+        /** `success` or `failure` for the events that end an attempt, null for the steps in between - so a reader can count outcomes without knowing every event name. */
+        val result: String? = null,
     )
 
     @Serializable
@@ -113,7 +115,12 @@ class Store(context: Context) {
     fun writeDiagnostics(d: Diagnostics) = synchronized(lock) { write("diagnostics.json", json.encodeToString(d)) }
 
     fun record(pkg: String, event: String, from: Long? = null, to: Long? = null, lockSha: String? = null, detail: String? = null) = update { s ->
-        val e = HistoryEvent(Instant.now().toString(), pkg, event, from, to, lockSha?.take(12), detail)
+        val result = when (event) {
+            "updated", "already-current", "confirmed-current", "config-accepted", "host-lock-accepted" -> "success"
+            "failed", "lock-refused", "updater.json-refused", "lock.json-refused" -> "failure"
+            else -> null
+        }
+        val e = HistoryEvent(Instant.now().toString(), pkg, event, from, to, lockSha?.take(12), detail, result)
         s.copy(history = (s.history + e).takeLast(HISTORY_LIMIT))
     }
 
