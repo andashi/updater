@@ -59,9 +59,12 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         val waiting = store.state().apps.filter { it.state == "waiting-constraints" || it.state == "user-action" || it.state == "installing" }.mapNotNull { it.sessionId }.toSet()
         installer.abandonStale(waiting)
 
+        // Only packages the last check recorded as behind and due: a package
+        // without a record has not been through the check's hold and
+        // ownership decisions, and the run does not make them itself.
         val due = Decide.all(config, lock, packages.abi, packages, packages.self).filterIsInstance<AppState.Behind>().filter { s ->
-            val r = store.app(s.pkg)
-            r == null || (r.state == "behind" && Backoff.due(r.nextTry?.let { t -> runCatching { Instant.parse(t) }.getOrNull() }, now))
+            val r = store.app(s.pkg) ?: return@filter false
+            r.state == "behind" && Backoff.due(r.nextTry?.let { t -> runCatching { Instant.parse(t) }.getOrNull() }, now)
         }
         for ((i, s) in due.withIndex()) {
             setForeground(Notifications.foregroundInfo(context, "Updating ${s.entry.label.ifEmpty { s.pkg }} (${i + 1}/${due.size})"))
