@@ -35,7 +35,7 @@
         <activity
             android:name=".ui.StatusActivity"
             android:exported="true"
-            android:theme="@android:style/Theme.DeviceDefault.DayNight">
+            android:theme="@style/Theme.Updater">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
