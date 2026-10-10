@@ -1,0 +1,40 @@
+name: verify
+
+# What CI can prove without a device: that every module compiles, the
+# pure-Kotlin decisions with their refusal cases once core/ exists, and the
+# shell-side tests. The emulator e2e in e2e/ never runs here (AGENTS.md
+# "Tests").
+#
+# JDK 21 is pinned although the owner's machine runs 26: core/ compiles to
+# bytecode 21 either way, and a release build (design §12) must not depend
+# on which JDK happened to be around.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: commit-msg hook test
+        run: tests/commit-msg.test.sh
+
+  gradle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: every module's debug build
+        run: ./gradlew --no-daemon :probe:assembleDebug

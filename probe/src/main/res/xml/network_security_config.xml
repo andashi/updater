@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Same posture as the updater will have (design §10): no cleartext, and
+     only the system's certificate store - a user-added CA may not speak for
+     the lock's host. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <!-- The emulator e2e serves its file over `adb reverse` on loopback,
+         where TLS has nothing to prove. Only here; the updater's release
+         build will carry no such exception. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">localhost</domain>
+    </domain-config>
+</network-security-config>
