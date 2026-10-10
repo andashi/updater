@@ -47,6 +47,9 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             return@withContext Result.failure()
         }
         val config = store.configText()?.let { runCatching { Config.parse(it, Debug.cleartextLocalhost(applicationContext)) }.getOrNull() } ?: return@withContext Result.success()
+        // Host-only (0002): the phone fetches nothing; what is behind is the
+        // laptop's to install, and the state says so.
+        if (config.hostOnly) return@withContext Result.success()
         val lockText = (if (config.hostOnly) store.hostLockText() else store.lockText()) ?: return@withContext Result.success()
         val lock = runCatching { Lock.parse(lockText, config.lockPolicy(Debug.cleartextLocalhost(applicationContext))) }.getOrNull() ?: return@withContext Result.success()
         val lockSha = store.state().lock.sha256

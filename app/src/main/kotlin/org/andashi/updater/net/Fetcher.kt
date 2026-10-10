@@ -1,5 +1,6 @@
 package org.andashi.updater.net
 
+import org.andashi.updater.core.BoundedDigest
 import org.andashi.updater.core.Hex
 import org.andashi.updater.core.Urls
 import java.io.File
@@ -66,8 +67,10 @@ class HttpFetcher(private val allowedHosts: Set<String>, private val cleartextLo
                 if (conn.responseCode != HttpURLConnection.HTTP_OK) return@open Fetcher.Download.Failed("http ${conn.responseCode}")
                 val declared = conn.contentLengthLong
                 if (declared > maxBytes) return@open Fetcher.Download.Failed("content-length $declared exceeds $maxBytes")
-                val digest = MessageDigest.getInstance("SHA-256")
-                var size = 0L
+                // The size refusal lives in core (BoundedDigest, tested there):
+                // a chunk that would pass the lock's size is refused before it
+                // is written.
+                val bounded = BoundedDigest(maxBytes)
                 into.parentFile?.mkdirs()
                 into.outputStream().use { out ->
                     conn.inputStream.use { input ->
@@ -75,14 +78,12 @@ class HttpFetcher(private val allowedHosts: Set<String>, private val cleartextLo
                         while (true) {
                             val n = input.read(buf)
                             if (n < 0) break
-                            size += n
-                            if (size > maxBytes) return@open Fetcher.Download.Failed("body exceeds $maxBytes bytes")
-                            digest.update(buf, 0, n)
+                            if (!bounded.update(buf, 0, n)) return@open Fetcher.Download.Failed("body exceeds $maxBytes bytes")
                             out.write(buf, 0, n)
                         }
                     }
                 }
-                Fetcher.Download.Ok(Hex.encode(digest.digest()), size)
+                Fetcher.Download.Ok(bounded.sha256(), bounded.size)
             }
         } catch (e: Exception) {
             Fetcher.Download.Failed(describe(e))
