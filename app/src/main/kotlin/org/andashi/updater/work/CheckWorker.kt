@@ -4,11 +4,13 @@ import android.content.Context
 import android.os.PowerManager
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import org.andashi.updater.Debug
 import org.andashi.updater.Notifications
 import org.andashi.updater.UpdaterApp
 import org.andashi.updater.core.AppState
 import org.andashi.updater.core.Backoff
-import org.andashi.updater.Debug
 import org.andashi.updater.core.Config
 import org.andashi.updater.core.Decide
 import org.andashi.updater.core.Fresh
@@ -16,6 +18,7 @@ import org.andashi.updater.core.Freshness
 import org.andashi.updater.core.Heartbeat
 import org.andashi.updater.core.Hex
 import org.andashi.updater.core.Hold
+import org.andashi.updater.core.InstalledPackage
 import org.andashi.updater.core.Lock
 import org.andashi.updater.core.LockFormatException
 import org.andashi.updater.net.Fetcher
@@ -31,10 +34,19 @@ import java.time.Instant
  * package's state, write the state the host reads, and enqueue the install
  * run if anything is due. Cheap and frequent; the install run is the
  * expensive one and runs only when this one found work.
+ *
+ * Checks are serialised in the process ([gate]): the periodic one, a
+ * shell's CHECK_NOW and a reconcile are enqueued under different names, and
+ * two of them deciding at once would race each other's lock and records.
+ * The record merge happens inside the store's transaction, against the
+ * records as they are then, so a result the install run or the status
+ * receiver wrote meanwhile is never overwritten by a decision made before it.
  */
 class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
 
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result = gate.withLock { check() }
+
+    private fun check(): Result {
         val context = applicationContext
         val store = UpdaterApp.store(context)
         val trigger = inputData.getString(Schedule.KEY_TRIGGER) ?: "unknown"
@@ -42,7 +54,7 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         val packages = AndroidPackages(context)
         val self = packages.installed(packages.self)
 
-        val config = store.configText()?.let { runCatching { Config.parse(it, Debug.cleartextLocalhost(applicationContext)) }.getOrNull() }
+        val config = Loader.config(context, store)
         if (config == null) {
             store.update { it.copy(lastCheck = now.toString(), lastCheckError = "no configuration from the host", updaterVersionCode = self?.versionCode ?: 0, updaterInstaller = self?.installer) }
             return Result.success()
@@ -54,67 +66,99 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         val exempt = context.getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(context.packageName)
         if (exempt) Notifications.clearExemptionMissing(context) else Notifications.exemptionMissing(context)
 
-        val fetcher = HttpFetcher(config.lockPolicy(Debug.cleartextLocalhost(applicationContext)).allowedHosts, Debug.cleartextLocalhost(applicationContext))
+        val fetcher = HttpFetcher(config.lockPolicy(Debug.cleartextLocalhost(context)).allowedHosts, Debug.cleartextLocalhost(context))
         val (lock, lockState) = obtainLock(config, store, fetcher, now)
 
         val states = Decide.all(config, lock, packages.abi, packages, packages.self)
         val lockSha = lockState.sha256
-        val previous = store.state().apps.associateBy { it.pkg }
-        val records = states.map { toRecord(it, config, previous[it.pkg], now, lockSha, packages) }
-
+        val installRunning = Loader.installRunning(context)
+        val installed = states.associate { it.pkg to packages.installed(it.pkg) }
         val foreign = Decide.foreign(config, packages).map { Store.ForeignApp(it.pkg, it.installer, it.versionCode) }
         val violations = Decide.netFalseViolations(config, packages)
         val checks = Store.ChecksState(netFalseOk = config.checks.netFalse - violations.toSet(), netFalseViolations = violations)
 
-        store.update {
-            it.copy(
+        // Decided outside, merged inside: the previous record of each package
+        // is read in the transaction, so a newer transition wins.
+        var previous: Map<String, Store.AppRecord> = emptyMap()
+        var records: List<Store.AppRecord> = emptyList()
+        var earliestHold: Instant? = null
+        store.update { s ->
+            previous = s.apps.associateBy { it.pkg }
+            val events = mutableListOf<Store.HistoryEvent>()
+            records = states.map { st ->
+                val (r, e) = toRecord(st, config, previous[st.pkg], now, lockSha, installed[st.pkg], installRunning, packages)
+                events += e
+                if (r.state == "held") {
+                    val opens = r.nextTry?.let { t -> runCatching { Instant.parse(t) }.getOrNull() }
+                    if (opens != null && (earliestHold == null || opens.isBefore(earliestHold))) earliestHold = opens
+                }
+                r
+            }
+            s.copy(
                 updaterVersionCode = self?.versionCode ?: 0, updaterInstaller = self?.installer,
                 exemption = if (exempt) "granted" else "missing",
                 lock = lockState, lastCheck = now.toString(),
-                lastCheckOk = if (lockState.lastError == null) now.toString() else it.lastCheckOk,
+                lastCheckOk = if (lockState.lastError == null) now.toString() else s.lastCheckOk,
                 lastCheckError = lockState.lastError,
                 apps = records, foreign = foreign, checks = checks,
+                history = (s.history + events).takeLast(Store.HISTORY_LIMIT),
             )
         }
         for ((state, record) in states.zip(records)) notify(context, state, record, previous[record.pkg])
 
         val due = records.any { it.state == "behind" && Backoff.due(it.nextTry?.let { t -> runCatching { Instant.parse(t) }.getOrNull() }, now) }
         if (due && exempt && !config.hostOnly) Schedule.install(context, trigger)
-        // While the system holds a session for a quiet moment, keep looking
-        // at the package manager at intervals, whatever the receiver does.
-        if (records.any { it.state == "waiting-constraints" }) Schedule.reconcile(context, RECONCILE_EVERY_MINUTES)
+        // One check at the moment the earliest hold opens, and - separately,
+        // under its own name - periodic looks while the system holds a
+        // session for a quiet moment.
+        earliestHold?.let { Schedule.reconcileHold(context, Duration.between(now, it).toMinutes().coerceAtLeast(1)) }
+        if (records.any { it.state == "waiting-constraints" }) Schedule.reconcileSessions(context, RECONCILE_EVERY_MINUTES)
         return Result.success()
     }
 
-    /** The lock from the host (host-only) or from the network, with the cached one as the fallback and the rollback guard. */
+    /**
+     * The lock from the host (host-only) or from the network, with the
+     * cached one as the fallback. The rollback guard runs against the lock
+     * on disk at the moment of replacement, inside the store's lock, so a
+     * slow answer for an older lock cannot replace a newer one another
+     * check accepted meanwhile.
+     */
     private fun obtainLock(config: Config, store: Store, fetcher: Fetcher, now: Instant): Pair<Lock?, Store.LockState> {
-        val cachedText = if (config.hostOnly) store.hostLockText() else store.lockText()
-        val cached = cachedText?.let { runCatching { Lock.parse(it, config.lockPolicy(Debug.cleartextLocalhost(applicationContext))) }.getOrNull() }
-        val cachedSha = cachedText?.let { sha(it) }
+        val policy = config.lockPolicy(Debug.cleartextLocalhost(applicationContext))
         val prior = store.state().lock
-
         if (config.hostOnly) {
-            val state = Store.LockState(generated = cached?.generated, sha256 = cachedSha, fetchedAt = prior.fetchedAt, source = "host",
+            val text = store.hostLockText()
+            val lock = text?.let { runCatching { Lock.parse(it, policy) }.getOrNull() }
+            return lock to Store.LockState(generated = lock?.generated, sha256 = text?.let { sha(it) }, fetchedAt = prior.fetchedAt, source = "host",
                 freshness = "unknown", freshnessReason = "host-only: the lock is as fresh as the last push",
-                lastError = if (cached == null) "no lock from the host yet" else null)
-            return cached to state
+                lastError = if (lock == null) "no lock from the host yet" else null)
         }
 
-        var text = cachedText; var lock = cached; var fetchedAt = prior.fetchedAt; var error: String? = null
+        var error: String? = null
+        var fetchedAt = prior.fetchedAt
         when (val r = fetcher.text(config.lock.url, store.lockEtag(), MAX_LOCK_BYTES)) {
-            is Fetcher.TextResult.Ok -> try {
-                lock = Lock.parse(r.text, config.lockPolicy(Debug.cleartextLocalhost(applicationContext)), cached)
-                text = r.text
-                store.writeLock(r.text, r.etag)
-                fetchedAt = now.toString()
-                if (cachedSha != sha(r.text)) store.record("-", "lock-fetched", lockSha = sha(r.text), detail = "generated ${lock.generated}")
-            } catch (e: LockFormatException) {
-                error = "lock refused: ${e.message}"
-                store.record("-", "lock-refused", detail = e.message)
+            is Fetcher.TextResult.Ok -> {
+                val refusal = store.replaceLock(r.text, r.etag) { existing ->
+                    val held = existing?.let { runCatching { Lock.parse(it, policy) }.getOrNull() }
+                    try {
+                        Lock.parse(r.text, policy, held); null
+                    } catch (e: LockFormatException) {
+                        e.message ?: "refused"
+                    }
+                }
+                when (refusal) {
+                    null -> {
+                        fetchedAt = now.toString()
+                        if (prior.sha256 != sha(r.text)) store.record("-", "lock-fetched", lockSha = sha(r.text), detail = "generated ${runCatching { Lock.parse(r.text, policy) }.getOrNull()?.generated}")
+                    }
+                    else -> { error = "lock refused: $refusal"; store.record("-", "lock-refused", detail = refusal) }
+                }
             }
             Fetcher.TextResult.NotModified -> fetchedAt = now.toString()
             is Fetcher.TextResult.Failed -> error = "lock unreachable: ${r.reason}"
         }
+        val text = store.lockText()
+        val lock = text?.let { runCatching { Lock.parse(it, policy) }.getOrNull() }
         val lockSha = text?.let { sha(it) }
         val heartbeat = if (config.lock.heartbeatUrl.isNotEmpty()) {
             (fetcher.text(config.lock.heartbeatUrl, null, MAX_LOCK_BYTES) as? Fetcher.TextResult.Ok)?.let { Heartbeat.parse(it.text) }
@@ -133,37 +177,41 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
 
     /**
      * The record the host reads, carrying over what is in flight. A package
-     * the install run is working on keeps its state until the receiver or
-     * the package manager says otherwise; a decision that now says
-     * `current` wins over any in-flight state, because it is the package
-     * manager speaking.
+     * the install run is working on keeps its state while the session it
+     * names still exists (or, before a session, while the install run is
+     * running); a decision that now says `current` wins over any in-flight
+     * state, because it is the package manager speaking. Returns the record
+     * and the history events to append in the same transaction.
      */
-    private fun toRecord(state: AppState, config: Config, prev: Store.AppRecord?, now: Instant, lockSha: String?, packages: AndroidPackages): Store.AppRecord {
+    private fun toRecord(
+        state: AppState, config: Config, prev: Store.AppRecord?, now: Instant, lockSha: String?,
+        installed: InstalledPackage?, installRunning: Boolean, packages: AndroidPackages,
+    ): Pair<Store.AppRecord, List<Store.HistoryEvent>> {
         val label = config.managed.firstOrNull { it.pkg == state.pkg }?.label ?: state.pkg
-        val installed = packages.installed(state.pkg)
+        val events = mutableListOf<Store.HistoryEvent>()
+        fun event(e: String, from: Long? = null, to: Long? = null, detail: String? = null) {
+            events += Store.HistoryEvent(now.toString(), state.pkg, e, from, to, lockSha?.take(12), detail, Store.resultOf(e))
+        }
         val base = Store.AppRecord(pkg = state.pkg, label = label, state = "", installed = installed?.versionCode, installer = installed?.installer, since = prev?.since ?: now.toString())
         fun keepSince(newState: String) = if (prev?.state == newState) prev.since else now.toString()
-        return when (state) {
+        val record = when (state) {
             is AppState.Current -> {
-                if (prev != null && prev.state != "current") store.record(state.pkg, "confirmed-current", from = prev.installed, to = state.versionCode, lockSha = lockSha)
+                if (prev != null && prev.state != "current") event("confirmed-current", from = prev.installed, to = state.versionCode)
                 base.copy(state = "current", locked = state.versionCode, since = keepSince("current"))
             }
             is AppState.Behind -> heldRecord(state, config, prev, now, base) ?: when (prev?.state) {
                 "downloading", "verifying", "installing", "waiting-constraints", "user-action" ->
-                    // In flight only while the session the record names still
-                    // exists; a session the system dropped (reboot, abandon,
-                    // timeout the receiver never heard) goes back to behind.
                     if (prev.sessionId != null && packages.sessionExists(prev.sessionId)) {
-                        prev.copy(installed = installed?.versionCode, locked = state.entry.versionCode, installer = installed?.installer)
+                        prev.copy(installed = installed?.versionCode, locked = state.entry.versionCode, lockedSha256 = state.entry.sha256, installer = installed?.installer)
                     } else if ((prev.state == "downloading" || prev.state == "verifying") && installRunning) {
-                        // No session yet; in flight only while the install run is.
-                        prev.copy(installed = installed?.versionCode, locked = state.entry.versionCode, installer = installed?.installer)
+                        prev.copy(installed = installed?.versionCode, locked = state.entry.versionCode, lockedSha256 = state.entry.sha256, installer = installed?.installer)
                     } else {
-                        store.record(state.pkg, "session-lost", to = state.entry.versionCode, lockSha = lockSha, detail = if (prev.sessionId != null) "session ${prev.sessionId} is gone; trying again" else "the install run stopped in ${prev.state}; trying again")
-                        base.copy(state = "behind", locked = state.entry.versionCode)
+                        event("session-lost", to = state.entry.versionCode, detail = if (prev.sessionId != null) "session ${prev.sessionId} is gone; trying again" else "the install run stopped in ${prev.state}; trying again")
+                        base.copy(state = "behind", locked = state.entry.versionCode, lockedSha256 = state.entry.sha256, seenAt = seenAtFor(prev, state.entry.versionCode, now))
                     }
-                "failed" -> if (prev.locked == state.entry.versionCode) prev.copy(state = "behind", installer = installed?.installer) else base.copy(state = "behind", locked = state.entry.versionCode, seenAt = now.toString())
-                else -> base.copy(state = "behind", locked = state.entry.versionCode, since = keepSince("behind"), seenAt = seenAtFor(prev, state.entry.versionCode, now),
+                "failed" -> if (prev.locked == state.entry.versionCode && prev.lockedSha256 == state.entry.sha256) prev.copy(state = "behind", installer = installed?.installer)
+                    else base.copy(state = "behind", locked = state.entry.versionCode, lockedSha256 = state.entry.sha256, seenAt = now.toString())
+                else -> base.copy(state = "behind", locked = state.entry.versionCode, lockedSha256 = state.entry.sha256, since = keepSince("behind"), seenAt = seenAtFor(prev, state.entry.versionCode, now),
                     reason = when {
                         config.hostOnly -> "host-only zone: the laptop installs this"
                         state.rebuilt -> "same version, other bytes in the lock: converging to the locked build"
@@ -171,26 +219,18 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
                     })
             }
             is AppState.Ahead -> base.copy(state = "ahead", locked = state.locked, reason = "installed ${state.installed} is newer than the lock's ${state.locked}", since = keepSince("ahead"))
-            is AppState.NotOwner -> base.copy(state = "not-owner", locked = state.locked, reason = notOwnerReason(state), since = keepSince("not-owner"))
+            is AppState.NotOwner -> base.copy(state = "not-owner", locked = state.locked, reason = Records.notOwnerReason(state, packages.self), since = keepSince("not-owner"))
             is AppState.Missing -> base.copy(state = "missing", reason = "not installed in this user; the updater never first-installs", since = keepSince("missing"))
             is AppState.Unverifiable -> base.copy(state = "unverifiable", reason = state.reason, since = keepSince("unverifiable"))
         }
-    }
-
-    /** Which ownership fact is wrong, so the host repairs that one: the installer of record (a same-version reinstall naming the updater) or Android 14's update owner. */
-    private fun notOwnerReason(s: AppState.NotOwner): String {
-        val self = applicationContext.packageName
-        val parts = mutableListOf<String>()
-        if (s.installer != self) parts += "installer of record is ${s.installer ?: "nobody"}; the host repairs this with a same-version reinstall naming the updater"
-        if (s.updateOwner != null && s.updateOwner != self) parts += "update ownership is held by ${s.updateOwner}; the host repairs this with a reinstall naming the updater with --update-ownership"
-        return parts.joinToString("; ")
+        return record to events
     }
 
     /** The first sighting of this locked version in this zone, kept across checks; a new version starts a new clock. */
     private fun seenAtFor(prev: Store.AppRecord?, locked: Long, now: Instant): String =
         if (prev != null && prev.locked == locked && prev.seenAt != null) prev.seenAt else now.toString()
 
-    /** `held` while the version is younger than `minimumAgeHours` (design §11); null when there is no hold. */
+    /** `held` while the version is younger than `minimumAgeHours` (design §11); null when there is no hold. The check that opens it is scheduled once, for the earliest hold, by the caller. */
     private fun heldRecord(state: AppState.Behind, config: Config, prev: Store.AppRecord?, now: Instant, base: Store.AppRecord): Store.AppRecord? {
         if (config.policy.minimumAgeHours <= 0) return null
         if (prev?.state in setOf("downloading", "verifying", "installing", "waiting-constraints", "user-action")) return null
@@ -198,10 +238,7 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         val seen = runCatching { Instant.parse(seenAt) }.getOrDefault(now)
         if (!Hold.held(seen, config.policy.minimumAgeHours, now)) return null
         val opens = Hold.opensAt(seen, config.policy.minimumAgeHours)
-        // A check at the moment the window opens, so the update does not
-        // wait for the next periodic one.
-        Schedule.reconcile(applicationContext, Duration.between(now, opens).toMinutes().coerceAtLeast(1))
-        return base.copy(state = "held", locked = state.entry.versionCode, seenAt = seenAt, nextTry = opens.toString(),
+        return base.copy(state = "held", locked = state.entry.versionCode, lockedSha256 = state.entry.sha256, seenAt = seenAt, nextTry = opens.toString(),
             reason = "held until $opens (minimumAgeHours ${config.policy.minimumAgeHours})", since = if (prev?.state == "held") prev.since else now.toString())
     }
 
@@ -220,19 +257,13 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
         }
     }
 
-    private val store get() = UpdaterApp.store(applicationContext)
-
-    /** Whether the install run is executing right now; a killed run leaves no session behind, and its records must not stay in flight. */
-    private val installRunning: Boolean by lazy {
-        runCatching {
-            androidx.work.WorkManager.getInstance(applicationContext).getWorkInfosForUniqueWork(Schedule.INSTALL).get().any { it.state == androidx.work.WorkInfo.State.RUNNING }
-        }.getOrDefault(false)
-    }
-
     private fun sha(text: String): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest(text.toByteArray()))
 
     companion object {
         const val MAX_LOCK_BYTES = 4L * 1024 * 1024
         const val RECONCILE_EVERY_MINUTES = 30L
+
+        /** One check at a time in this process, whatever name enqueued it. */
+        private val gate = Mutex()
     }
 }

@@ -37,6 +37,8 @@ class Store(context: Context) {
         val lastError: String? = null,
         /** When this zone first saw [locked] in a valid lock: the clock of `minimumAgeHours` (design §11). */
         val seenAt: String? = null,
+        /** The lock entry's sha256 this record was decided against; the install run takes a `behind` record only for that very entry. */
+        val lockedSha256: String? = null,
     )
 
     @Serializable
@@ -102,7 +104,20 @@ class Store(context: Context) {
     fun writeConfigText(text: String) = write("config.json", text)
     fun lockText(): String? = read("lock.json")
     fun lockEtag(): String? = read("lock.etag")
-    fun writeLock(text: String, etag: String?) = synchronized(lock) { write("lock.json", text); if (etag != null) write("lock.etag", etag) else File(dir, "lock.etag").delete() }
+    /**
+     * Replaces the cached lock under the store's lock, after [refuse] has
+     * looked at what is on disk at that very moment and returned null; a
+     * refusal (its text) leaves the cached lock as it was. Two checks
+     * answering out of order therefore cannot replace a newer lock with an
+     * older one.
+     */
+    fun replaceLock(text: String, etag: String?, refuse: (existing: String?) -> String?): String? = synchronized(lock) {
+        val why = refuse(read("lock.json"))
+        if (why != null) return why
+        write("lock.json", text)
+        if (etag != null) write("lock.etag", etag) else File(dir, "lock.etag").delete()
+        null
+    }
     fun hostLockText(): String? = read("host-lock.json")
     fun writeHostLockText(text: String) = write("host-lock.json", text)
 
@@ -121,12 +136,7 @@ class Store(context: Context) {
     fun writeDiagnostics(d: Diagnostics) = synchronized(lock) { write("diagnostics.json", json.encodeToString(d)) }
 
     fun record(pkg: String, event: String, from: Long? = null, to: Long? = null, lockSha: String? = null, detail: String? = null) = update { s ->
-        val result = when (event) {
-            "updated", "already-current", "confirmed-current", "config-accepted", "host-lock-accepted" -> "success"
-            "failed", "lock-refused", "updater.json-refused", "lock.json-refused" -> "failure"
-            else -> null
-        }
-        val e = HistoryEvent(Instant.now().toString(), pkg, event, from, to, lockSha?.take(12), detail, result)
+        val e = HistoryEvent(Instant.now().toString(), pkg, event, from, to, lockSha?.take(12), detail, resultOf(event))
         s.copy(history = (s.history + e).takeLast(HISTORY_LIMIT))
     }
 
@@ -153,6 +163,13 @@ class Store(context: Context) {
 
     companion object {
         const val HISTORY_LIMIT = 500
+
+        /** `success` or `failure` for the events that end an attempt, null for the steps in between. */
+        fun resultOf(event: String): String? = when (event) {
+            "updated", "already-current", "confirmed-current", "config-accepted", "host-lock-accepted" -> "success"
+            "failed", "lock-refused", "updater.json-refused", "lock.json-refused" -> "failure"
+            else -> null
+        }
         val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; prettyPrint = false }
     }
 }

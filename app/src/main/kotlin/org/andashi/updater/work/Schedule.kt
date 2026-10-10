@@ -23,7 +23,8 @@ object Schedule {
     const val CHECK_PERIODIC = "check-periodic"
     const val CHECK_NOW = "check-now"
     const val INSTALL = "install"
-    const val RECONCILE = "reconcile"
+    const val RECONCILE_HOLD = "reconcile-hold"
+    const val RECONCILE_SESSIONS = "reconcile-sessions"
     const val KEY_TRIGGER = "trigger"
 
     fun apply(context: Context, config: Config) {
@@ -56,19 +57,28 @@ object Schedule {
     }
 
     /**
+     * A check when the earliest hold opens (design §11), one per check run,
+     * under its own name so it cannot replace - or be replaced by - the
+     * session reconcile below.
+     */
+    fun reconcileHold(context: Context, delayMinutes: Long) = delayedCheck(context, RECONCILE_HOLD, delayMinutes, "hold-opens")
+
+    /**
      * A check after a delay, for sessions the system holds until a quiet
      * moment (install constraints): their result arrives at the receiver,
      * but a receiver can be lost with its process, and a state that says
      * "waiting" for a package the package manager already updated is the
      * proxy the design forbids. REPLACE: one pending reconcile at a time.
      */
-    fun reconcile(context: Context, delayMinutes: Long) {
+    fun reconcileSessions(context: Context, delayMinutes: Long) = delayedCheck(context, RECONCILE_SESSIONS, delayMinutes, "reconcile")
+
+    private fun delayedCheck(context: Context, name: String, delayMinutes: Long, trigger: String) {
         WorkManager.getInstance(context).enqueueUniqueWork(
-            RECONCILE,
+            name,
             ExistingWorkPolicy.REPLACE,
             OneTimeWorkRequestBuilder<CheckWorker>()
                 .setInitialDelay(delayMinutes, TimeUnit.MINUTES)
-                .setInputData(workDataOf(KEY_TRIGGER to "reconcile"))
+                .setInputData(workDataOf(KEY_TRIGGER to trigger))
                 .build(),
         )
     }

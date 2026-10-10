@@ -14,7 +14,6 @@ import org.andashi.updater.core.Backoff
 import org.andashi.updater.Debug
 import org.andashi.updater.core.Config
 import org.andashi.updater.core.Decide
-import org.andashi.updater.core.Lock
 import org.andashi.updater.install.SessionInstaller
 import org.andashi.updater.net.Fetcher
 import org.andashi.updater.net.HttpFetcher
@@ -46,12 +45,11 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
             Notifications.exemptionMissing(context)
             return@withContext Result.failure()
         }
-        val config = store.configText()?.let { runCatching { Config.parse(it, Debug.cleartextLocalhost(applicationContext)) }.getOrNull() } ?: return@withContext Result.success()
+        val config = Loader.config(context, store) ?: return@withContext Result.success()
         // Host-only (0002): the phone fetches nothing; what is behind is the
         // laptop's to install, and the state says so.
         if (config.hostOnly) return@withContext Result.success()
-        val lockText = (if (config.hostOnly) store.hostLockText() else store.lockText()) ?: return@withContext Result.success()
-        val lock = runCatching { Lock.parse(lockText, config.lockPolicy(Debug.cleartextLocalhost(applicationContext))) }.getOrNull() ?: return@withContext Result.success()
+        val lock = Loader.lock(context, store, config) ?: return@withContext Result.success()
         val lockSha = store.state().lock.sha256
         val packages = AndroidPackages(context)
         val installer = SessionInstaller(context, packages)
@@ -62,12 +60,14 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         val waiting = store.state().apps.filter { it.state == "waiting-constraints" || it.state == "user-action" || it.state == "installing" }.mapNotNull { it.sessionId }.toSet()
         installer.abandonStale(waiting)
 
-        // Only packages the last check recorded as behind and due: a package
-        // without a record has not been through the check's hold and
-        // ownership decisions, and the run does not make them itself.
+        // Only packages the last check recorded as behind and due, for the
+        // very lock entry it decided on (its sha256): a package without a
+        // record, or whose record was decided against another entry, has not
+        // been through the check's hold and ownership decisions for this
+        // one, and the run does not make them itself.
         val due = Decide.all(config, lock, packages.abi, packages, packages.self).filterIsInstance<AppState.Behind>().filter { s ->
             val r = store.app(s.pkg) ?: return@filter false
-            r.state == "behind" && Backoff.due(r.nextTry?.let { t -> runCatching { Instant.parse(t) }.getOrNull() }, now)
+            r.state == "behind" && r.lockedSha256 == s.entry.sha256 && Backoff.due(r.nextTry?.let { t -> runCatching { Instant.parse(t) }.getOrNull() }, now)
         }
         for ((i, s) in due.withIndex()) {
             setForeground(Notifications.foregroundInfo(context, "Updating ${s.entry.label.ifEmpty { s.pkg }} (${i + 1}/${due.size})"))
@@ -75,7 +75,7 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         }
         // Sessions the system is holding for a quiet moment report through
         // the receiver; a delayed check reads the package manager regardless.
-        if (store.state().apps.any { it.state == "waiting-constraints" }) Schedule.reconcile(context, RECONCILE_AFTER_MINUTES)
+        if (store.state().apps.any { it.state == "waiting-constraints" }) Schedule.reconcileSessions(context, RECONCILE_AFTER_MINUTES)
         Result.success()
     }
 
@@ -111,9 +111,14 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         when (val out = installer.install(entry, pin, file, ok.sha256, lockSha, config.policy.constraints, boundReached)) {
             is SessionInstaller.Outcome.Refused -> fail("refused: ${out.reason}")
             is SessionInstaller.Outcome.AlreadyCurrent -> {
+                // The lock's version and bytes are installed; whether that is
+                // `current` is the full decision's to say (ownership included).
                 file.delete()
-                store.setApp(store.app(entry.pkg)!!.copy(state = "current", installed = out.versionCode, sessionId = null, since = Instant.now().toString(), reason = null))
-                store.record(entry.pkg, "already-current", to = out.versionCode, lockSha = lockSha, detail = "another zone got there first")
+                val managed = config.managed.first { it.pkg == entry.pkg }
+                val decided = Decide.state(managed, Loader.lock(context, store, config), packages.abi, packages.installed(entry.pkg), packages.self)
+                val (name, reason) = Records.fromDecision(decided, packages.self)
+                store.setApp(store.app(entry.pkg)!!.copy(state = name, installed = out.versionCode, sessionId = null, since = Instant.now().toString(), reason = reason))
+                store.record(entry.pkg, if (name == "current") "already-current" else "already-installed", to = out.versionCode, lockSha = lockSha, detail = "another zone got there first" + if (name != "current") "; now $name" else "")
             }
             is SessionInstaller.Outcome.Ahead -> {
                 file.delete()

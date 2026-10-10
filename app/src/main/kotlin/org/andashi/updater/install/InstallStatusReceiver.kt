@@ -7,9 +7,13 @@ import android.content.Intent
 import android.content.pm.PackageInstaller
 import org.andashi.updater.Notifications
 import org.andashi.updater.UpdaterApp
+import org.andashi.updater.core.AppState
 import org.andashi.updater.core.Backoff
+import org.andashi.updater.core.Decide
 import org.andashi.updater.pm.AndroidPackages
 import org.andashi.updater.store.Store
+import org.andashi.updater.work.Loader
+import org.andashi.updater.work.Records
 import org.andashi.updater.work.Schedule
 import java.time.Instant
 
@@ -45,16 +49,30 @@ class InstallStatusReceiver : BroadcastReceiver() {
                 Notifications.actionNeeded(context, pkg, record.label.ifEmpty { pkg }, confirm)
             }
             PackageInstaller.STATUS_SUCCESS -> {
-                val installed = AndroidPackages(context).installed(pkg)
-                if (installed != null && installed.versionCode == expected) {
+                // Success is the full decision's to confirm (design §7): the
+                // lock's version and bytes, the pinned signer, and ownership -
+                // never the version number alone.
+                val packages = AndroidPackages(context)
+                val installed = packages.installed(pkg)
+                val config = Loader.config(context, store)
+                val managed = config?.managed?.firstOrNull { it.pkg == pkg }
+                val decided = if (config != null && managed != null) Decide.state(managed, Loader.lock(context, store, config), packages.abi, installed, packages.self) else null
+                if (decided is AppState.Current && installed != null && installed.versionCode == expected) {
                     store.setApp(record.copy(state = "current", installed = installed.versionCode, locked = expected, installer = installed.installer, sessionId = null, attempts = 0, nextTry = null, since = now, lastError = null, reason = null))
                     store.record(pkg, "updated", from = record.installed, to = installed.versionCode, lockSha = lockSha, detail = "confirmed by the package manager")
                     Notifications.clearAction(context, pkg)
                     Notifications.clearFailure(context, pkg)
+                } else if (decided != null) {
+                    // Installed, but not current by the full decision: say
+                    // what it is (not-owner, behind as a rebuild, ahead, ...).
+                    val (name, reason) = Records.fromDecision(decided, packages.self)
+                    val why = "success reported; the package manager shows ${installed?.versionCode ?: "nothing"}, decided $name${reason?.let { ": $it" } ?: ""}"
+                    store.setApp(record.copy(state = name, installed = installed?.versionCode, locked = expected, installer = installed?.installer, sessionId = null, since = now, lastError = null, reason = reason))
+                    store.record(pkg, "installed-not-current", from = record.installed, to = installed?.versionCode, lockSha = lockSha, detail = why)
                 } else {
-                    // The system said success and the package manager disagrees:
-                    // the one case that must never be called done.
-                    val why = "success reported, but the package manager shows ${installed?.versionCode ?: "nothing"} instead of $expected"
+                    // The system said success and nothing can confirm it: the
+                    // one case that must never be called done.
+                    val why = "success reported, but the package manager shows ${installed?.versionCode ?: "nothing"} instead of $expected and no config or lock can decide"
                     store.setApp(record.copy(state = "failed", sessionId = null, since = now, lastError = why, attempts = record.attempts + 1, nextTry = Backoff.next(record.attempts + 1, Instant.now()).toString()))
                     store.record(pkg, "failed", to = expected, lockSha = lockSha, detail = why)
                     Notifications.failure(context, pkg, record.label.ifEmpty { pkg }, why)
