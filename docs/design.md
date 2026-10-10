@@ -241,6 +241,15 @@ the provider was weighed and dropped for v1: it buys one code path at the cost
 of streaming every APK through binder, and the stopped-zone case needs adb
 anyway. The ingest accepts a lock in host-only mode; APKs stay with adb.
 
+**Every host install names its user.** Measured 2026-10-10 by the
+provisioning side (emulator-5558, shell): `adb install -r -i <updater> <apk>`
+*without* `--user` installed the package into every user on the device,
+because pm's default user is ALL and that covers a replace too. With
+`--user N` the code updated device-wide and the set of users holding the
+package stayed exactly as it was. So the first install, the device-wide
+upgrade and the same-version repair all carry `--user N` for a user that
+has the package.
+
 **The shell strips the installer of record, silently.** Measured 2026-10-02:
 `adb install -r --user 0 <apk>` *without* `-i` on a package the updater owns
 (with `--update-ownership`) succeeds, prompts nothing, and resets the
