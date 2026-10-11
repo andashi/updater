@@ -565,10 +565,11 @@ release):
   repository's README, on andashi.org, and pinned in provisioning's
   `apks/certs/`. Three places that would all have to lie together.
 - **The one-time setup** runs in the owner's shell (`bin/release-key-setup`):
-  keytool makes the keystore, the four secrets go to the environment with
-  `gh secret set --env`, and the key and its passwords never pass through
-  any other session. The keystore file and its password, kept apart, are
-  the backup.
+  keytool makes the keystore, the three secrets go to the environment with
+  `gh secret set --env` after the script has checked that the environment
+  requires exactly the owner's approval, and the key and its password never
+  pass through any other session. The keystore file and its password, kept
+  apart, are the backup.
 - **Self-update** goes through the same path as every other app: the lock
   names the updater, the updater is its own installer of record (the host
   installed it with `-i <updater>`), the session is silent. The commit kills

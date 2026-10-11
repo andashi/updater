@@ -21,11 +21,14 @@ and never passes through any session but the owner's shell:
 bin/release-key-setup
 ```
 
-The script asks for two passwords (keystore and key, typed, never shown),
-runs `keytool` to create `updater-release.p12`, prints the signer
-fingerprint, and sets the four secrets at environment scope with
+The script first checks that the environment requires exactly one
+reviewer, the person running it, and refuses otherwise. It asks for one
+password (typed twice, never shown - a PKCS12 keystore protects its key
+with the keystore password and ignores a separate key password), runs
+`keytool` to create `updater-release.p12`, prints the signer fingerprint,
+and sets the three secrets at environment scope with
 `gh secret set --env release`: `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`,
-`KEY_ALIAS`, `KEY_PASSWORD`. The keystore file stays on the owner's disk as
+`KEY_ALIAS`. The keystore file stays on the owner's disk as
 the backup - GitHub secrets are write-only - and is kept with its password
 apart from it. Losing both means every phone needs a reinstall over adb; it
 is the one thing in this project that cannot be regenerated.

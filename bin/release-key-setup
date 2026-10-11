@@ -7,7 +7,7 @@
 #
 #   bin/release-key-setup [keystore path]      default: ./updater-release.p12
 #
-# Needs: keytool (a JDK), gh (logged in as the owner), base64.
+# Needs: keytool (a JDK), gh (logged in as the owner), jq, base64.
 set -euo pipefail
 REPO="${RELEASE_REPO:-andashi/updater}"
 ENV_NAME=release
@@ -15,28 +15,35 @@ ALIAS=updater
 ks="${1:-$PWD/updater-release.p12}"
 ok(){ printf '  + %s\n' "$*"; }; bad(){ printf '  x %s\n' "$*" >&2; exit 1; }
 
-for t in keytool gh base64; do command -v "$t" >/dev/null || bad "$t is not installed"; done
+for t in keytool gh jq base64; do command -v "$t" >/dev/null || bad "$t is not installed"; done
 gh auth status >/dev/null 2>&1 || bad "gh is not logged in"
 [ ! -e "$ks" ] || bad "$ks exists - this script never overwrites a key; move it away first if you really mean to make a new one"
-gh api "repos/$REPO/environments/$ENV_NAME" >/dev/null 2>&1 || bad "environment $ENV_NAME does not exist in $REPO (CI creates it; see docs/release.md)"
+# The environment must be the one the release contract describes before a
+# key goes into it: exactly one required reviewer, and that reviewer the
+# person running this. Any other shape - no reviewer, a second one, a
+# team - would let somebody else approve a release.
+me="$(gh api user --jq .login)"
+env_json="$(gh api "repos/$REPO/environments/$ENV_NAME" 2>/dev/null)" || bad "environment $ENV_NAME does not exist in $REPO (CI creates it; see docs/release.md)"
+reviewers="$(jq -r '[.protection_rules[]? | select(.type=="required_reviewers") | .reviewers[] | "\(.type):\(.reviewer.login // .reviewer.slug)"] | join(",")' <<<"$env_json")"
+[ "$reviewers" = "User:$me" ] || bad "environment $ENV_NAME must have exactly one required reviewer, you ($me); it has: ${reviewers:-none}"
+ok "environment $ENV_NAME requires your approval and nobody else's"
 
-echo "Two passwords, typed twice each, never shown. Keep them apart from the keystore file."
+# One password: a PKCS12 keystore protects its key with the keystore
+# password and ignores a separate key password, so asking for two would
+# store one that never applies.
+echo "One password, typed twice, never shown. Keep it apart from the keystore file."
 read -r -s -p "keystore password: " ksp; echo
 read -r -s -p "keystore password, again: " ksp2; echo
-[ "$ksp" = "$ksp2" ] || bad "the keystore passwords differ"
-[ "${#ksp}" -ge 12 ] || bad "the keystore password is shorter than 12 characters"
-read -r -s -p "key password: " kp; echo
-read -r -s -p "key password, again: " kp2; echo
-[ "$kp" = "$kp2" ] || bad "the key passwords differ"
-[ "${#kp}" -ge 12 ] || bad "the key password is shorter than 12 characters"
+[ "$ksp" = "$ksp2" ] || bad "the passwords differ"
+[ "${#ksp}" -ge 12 ] || bad "the password is shorter than 12 characters"
 
 # EC P-256, thirty years: Android verifies v2/v3 signatures with it, and
 # the certificate's lifetime only has to outlive the app.
 umask 077
-STOREPASS="$ksp" KEYPASS="$kp" keytool -genkeypair -v -keystore "$ks" -storetype PKCS12 \
+STOREPASS="$ksp" keytool -genkeypair -v -keystore "$ks" -storetype PKCS12 \
   -alias "$ALIAS" -keyalg EC -groupname secp256r1 -sigalg SHA256withECDSA \
   -validity 10950 -dname "CN=andashi updater" \
-  -storepass:env STOREPASS -keypass:env KEYPASS >/dev/null
+  -storepass:env STOREPASS -keypass:env STOREPASS >/dev/null
 ok "keystore written: $ks"
 
 fp="$(STOREPASS="$ksp" keytool -list -v -keystore "$ks" -alias "$ALIAS" -storepass:env STOREPASS | sed -n 's/.*SHA256: //p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')"
@@ -47,9 +54,8 @@ fp="$(STOREPASS="$ksp" keytool -list -v -keystore "$ks" -alias "$ALIAS" -storepa
 base64 -w0 < "$ks" | gh secret set KEYSTORE_BASE64 --repo "$REPO" --env "$ENV_NAME"
 printf '%s' "$ksp" | gh secret set KEYSTORE_PASSWORD --repo "$REPO" --env "$ENV_NAME"
 printf '%s' "$ALIAS" | gh secret set KEY_ALIAS --repo "$REPO" --env "$ENV_NAME"
-printf '%s' "$kp" | gh secret set KEY_PASSWORD --repo "$REPO" --env "$ENV_NAME"
-unset ksp ksp2 kp kp2 STOREPASS KEYPASS
-ok "four secrets set in environment $ENV_NAME of $REPO"
+unset ksp ksp2 STOREPASS
+ok "three secrets set in environment $ENV_NAME of $REPO"
 gh secret list --repo "$REPO" --env "$ENV_NAME" | sed 's/^/      /'
 
 cat <<EOF

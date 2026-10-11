@@ -91,7 +91,9 @@ jobs:
 
   sign:
     needs: compare
-    if: startsWith(github.ref, 'refs/tags/')
+    # A version-tag push only: a manual dispatch can target any ref, and
+    # this job must never reach the approval step for anything else.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     # The environment holds the key and requires the owner's approval; this
     # job waits for the tap and only then receives the secrets.
     environment: release
@@ -114,7 +116,6 @@ jobs:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
           TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
@@ -126,7 +127,7 @@ jobs:
           mkdir -p release
           cp agreed/updater-unsigned.apk release/
           "$bt/apksigner" sign --ks "$ks" --ks-key-alias "$KEY_ALIAS" \
-            --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEY_PASSWORD \
+            --ks-pass env:KEYSTORE_PASSWORD --key-pass env:KEYSTORE_PASSWORD \
             --v2-signing-enabled true --v3-signing-enabled true \
             --out "release/updater-$TAG.apk" agreed/updater-unsigned.apk
           rm -f "$ks"
