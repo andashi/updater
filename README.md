@@ -39,12 +39,16 @@ bin/     pr-gate (the merge conditions as a condition), release-key-setup (the o
 ## Signer
 
 Every release is signed with one key (decision 0004). Its certificate's
-SHA-256 fingerprint, the pin that provisioning's `apks/certs/org.andashi.updater.cert`
-and andashi.org carry too:
+SHA-256 fingerprint is the pin, kept machine-readable in
+[`release-signer.sha256`](release-signer.sha256):
 
 ```
 0d0334f0a1237ed0b449d0d408e6be3ad113c9542fbaf9912dff31cf0362e1d3
 ```
 
-Every release's notes print the fingerprint of the APK they ship; it must
-be this one. `apksigner verify --print-certs updater-v*.apk` shows it.
+The release workflow refuses to publish an APK whose signer is not this
+fingerprint, and every release's notes print the one they ship.
+`apksigner verify --print-certs updater-v*.apk` shows it. The same pin is
+to be carried by andashi.org and by provisioning as
+`apks/certs/org.andashi.updater.cert`, each placed by hand after the first
+release; until all three agree, the trust roots are not complete.
