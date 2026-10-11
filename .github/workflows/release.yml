@@ -42,6 +42,8 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
@@ -102,6 +104,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # Only for the pin file: the APK is the artifact the runners agreed on.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: release-signer.sha256
+          sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: agreed
@@ -133,6 +141,12 @@ jobs:
           rm -f "$ks"
           "$bt/apksigner" verify --print-certs "release/updater-$TAG.apk" | tee release/certs.txt
           fp="$(sed -n 's/.*SHA-256 digest: //p' release/certs.txt | head -1 | tr 'A-F' 'a-f')"
+          # The pin is enforced here, before anything is published: a key
+          # that is not the pinned one - a replaced or wrong secret - ends
+          # the release, with both fingerprints in the log.
+          pin="$(tr -d '[:space:]' < release-signer.sha256)"
+          [ "${#pin}" = 64 ] || { echo "::error::release-signer.sha256 does not hold one SHA-256 fingerprint"; exit 1; }
+          [ "$fp" = "$pin" ] || { echo "::error::signed with $fp, but the pinned signer is $pin - the key in the release environment is not the pinned key"; exit 1; }
           echo "$fp" > release/signer.sha256
           cp agreed/toolchain.txt release/
           ( cd release && sha256sum "updater-$TAG.apk" updater-unsigned.apk > SHA256SUMS )
