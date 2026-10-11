@@ -70,11 +70,18 @@ class IngestProvider : ContentProvider() {
                 CONFIG -> {
                     val config = Config.parse(text, Debug.cleartextLocalhost(context))   // throws with every problem named
                     store.writeConfigText(text)
-                    store.update { it.copy(config = Store.ConfigState(sha, Instant.now().toString(), config.zone)) }
-                    store.writeDiagnostics(store.diagnostics().copy(configSha256 = sha, success = true, error = null, at = Instant.now().toString()))
-                    store.record("-", "config-accepted", detail = "zone ${config.zone}, ${config.managed.size} managed, mode ${config.lock.mode}")
-                    Schedule.apply(context, config)
-                    Schedule.checkNow(context, "config")
+                    // From here the config is in force; a failure below is
+                    // reported as such, never as "refused" for a config that
+                    // was in fact accepted.
+                    try {
+                        store.update { it.copy(config = Store.ConfigState(sha, Instant.now().toString(), config.zone)) }
+                        store.writeDiagnostics(store.diagnostics().copy(configSha256 = sha, success = true, error = null, at = Instant.now().toString()))
+                        store.record("-", "config-accepted", detail = "zone ${config.zone}, ${config.managed.size} managed, mode ${config.lock.mode}")
+                        Schedule.apply(context, config)
+                        Schedule.checkNow(context, "config")
+                    } catch (e: Exception) {
+                        store.writeDiagnostics(store.diagnostics().copy(configSha256 = sha, success = true, error = "accepted, but after that: ${e.javaClass.simpleName}: ${e.message}", at = Instant.now().toString()))
+                    }
                 }
                 LOCK -> {
                     val config = store.configText()?.let { Config.parse(it, Debug.cleartextLocalhost(context)) }

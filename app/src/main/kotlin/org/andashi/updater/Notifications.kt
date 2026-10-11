@@ -19,11 +19,13 @@ object Notifications {
     const val CHANNEL_ACTION = "action"
     const val CHANNEL_FAILURE = "failure"
     const val CHANNEL_SERVICE = "service"
+    // Disjoint ranges: the per-package ids add a 16-bit hash (0..65535) to
+    // their base, so the bases are 100000 apart and the fixed ids sit below.
     const val ID_SERVICE = 1
-    private const val ID_ACTION_BASE = 1000
-    private const val ID_FAILURE_BASE = 2000
-    const val ID_LOCK = 3000
-    const val ID_EXEMPTION = 3001
+    const val ID_LOCK = 2
+    const val ID_EXEMPTION = 3
+    private const val ID_ACTION_BASE = 100_000
+    private const val ID_FAILURE_BASE = 200_000
 
     fun ensureChannels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java)

@@ -32,7 +32,7 @@ class SessionInstaller(private val context: Context, private val packages: Packa
          * callback, or a self-update replacing the process, would otherwise
          * overwrite `current` with `installing`).
          */
-        class Ready(val sessionId: Int, val waitingForConstraints: Boolean, val commit: () -> Unit) : Outcome()
+        class Ready(val sessionId: Int, val waitingForConstraints: Boolean, val commit: () -> Unit, val abandon: () -> Unit) : Outcome()
         data class AlreadyCurrent(val versionCode: Long) : Outcome()
         data class Ahead(val versionCode: Long) : Outcome()
         data class Refused(val reason: String) : Outcome()
@@ -87,36 +87,29 @@ class SessionInstaller(private val context: Context, private val packages: Packa
                 if (constraints.notForeground) { setAppNotForegroundRequired(); setAppNotInteractingRequired() }
             }.build()
             session.close()
-            return Outcome.Ready(sessionId, waitingForConstraints = true) {
-                installer.commitSessionAfterInstallConstraintsAreMet(sessionId, status.intentSender, ic, constraints.boundHours * 3_600_000L)
-            }
+            return Outcome.Ready(
+                sessionId, waitingForConstraints = true,
+                commit = { installer.commitSessionAfterInstallConstraintsAreMet(sessionId, status.intentSender, ic, constraints.boundHours * 3_600_000L) },
+                abandon = { runCatching { installer.abandonSession(sessionId) } },
+            )
         }
-        return Outcome.Ready(sessionId, waitingForConstraints = false) {
-            session.commit(status.intentSender)
-            session.close()
-        }
+        return Outcome.Ready(
+            sessionId, waitingForConstraints = false,
+            commit = { session.commit(status.intentSender); session.close() },
+            abandon = { session.abandon() },
+        )
     }
 
-    /** The bound elapsed: commit the session the constraints were holding, directly. */
-    fun commitDirectly(sessionId: Int, pkg: String, versionCode: Long, lockSha: String?): Boolean {
-        val installer = context.packageManager.packageInstaller
-        val info = installer.getSessionInfo(sessionId) ?: return false
-        if (info.appPackageName != pkg) return false
-        return try {
-            installer.openSession(sessionId).use { s ->
-                s.commit(InstallStatusReceiver.pendingIntent(context, sessionId, pkg, versionCode, lockSha).intentSender)
-            }
-            true
-        } catch (_: Exception) {
-            false
-        }
-    }
-
-    /** Sessions this app owns that nothing is waiting for any more - after a crash, or a self-update that restarted the process. */
-    fun abandonStale(keep: Set<Int>) {
+    /**
+     * Every session this app owns that was never committed: left by a crash
+     * between writing and commit, or by a self-update that restarted the
+     * process. Nothing will ever report on them, so they go; a committed
+     * session stays, the system owns it now and reports through the receiver.
+     */
+    fun abandonStale() {
         val installer = context.packageManager.packageInstaller
         for (s in installer.mySessions) {
-            if (s.sessionId !in keep && !s.isCommitted) runCatching { installer.abandonSession(s.sessionId) }
+            if (!s.isCommitted) runCatching { installer.abandonSession(s.sessionId) }
         }
     }
 

@@ -29,6 +29,19 @@ import java.time.Instant
  */
 class InstallStatusReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        // Off the main thread: confirming success reads the package manager
+        // and, after a cache miss, hashes the installed APK.
+        val pending = goAsync()
+        Thread {
+            try {
+                handle(context, intent)
+            } finally {
+                pending.finish()
+            }
+        }.start()
+    }
+
+    private fun handle(context: Context, intent: Intent) {
         val store = UpdaterApp.store(context)
         val pkg = intent.getStringExtra(EXTRA_PKG) ?: return
         val expected = intent.getLongExtra(EXTRA_VERSION, -1)
@@ -84,7 +97,9 @@ class InstallStatusReceiver : BroadcastReceiver() {
                 val timedOut = status == PackageInstaller.STATUS_FAILURE_TIMEOUT
                 if (timedOut && record.state == "waiting-constraints") {
                     // The bound elapsed while waiting for a quiet moment: an
-                    // update that waits forever is an unpatched app (design §11).
+                    // update that waits forever is an unpatched app (design
+                    // §11). The next install run downloads and commits a
+                    // fresh session without constraints ("bound reached").
                     store.setApp(record.copy(state = "behind", sessionId = null, since = now, lastError = null, reason = "bound reached, installing without waiting"))
                     store.record(pkg, "bound-reached", to = expected, lockSha = lockSha, detail = why)
                     Schedule.install(context, "bound-reached")

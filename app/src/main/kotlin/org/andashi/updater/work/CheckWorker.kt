@@ -177,9 +177,9 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
 
     /**
      * The record the host reads, carrying over what is in flight. A package
-     * the install run is working on keeps its state while the session it
-     * names still exists (or, before a session, while the install run is
-     * running); a decision that now says `current` wins over any in-flight
+     * the install run is working on keeps its state while the committed
+     * session it names still exists (or, before a session, while the install
+     * run is running); a decision that now says `current` wins over any in-flight
      * state, because it is the package manager speaking. Returns the record
      * and the history events to append in the same transaction.
      */
@@ -201,7 +201,7 @@ class CheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(
             }
             is AppState.Behind -> heldRecord(state, config, prev, now, base) ?: when (prev?.state) {
                 "downloading", "verifying", "installing", "waiting-constraints", "user-action" ->
-                    if (prev.sessionId != null && packages.sessionExists(prev.sessionId)) {
+                    if (prev.sessionId != null && packages.sessionCommitted(prev.sessionId)) {
                         prev.copy(installed = installed?.versionCode, locked = state.entry.versionCode, lockedSha256 = state.entry.sha256, installer = installed?.installer)
                     } else if ((prev.state == "downloading" || prev.state == "verifying") && installRunning) {
                         prev.copy(installed = installed?.versionCode, locked = state.entry.versionCode, lockedSha256 = state.entry.sha256, installer = installed?.installer)

@@ -57,8 +57,10 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         val now = Instant.now()
 
         // Sessions nobody waits for: left by a crash or by the self-update.
-        val waiting = store.state().apps.filter { it.state == "waiting-constraints" || it.state == "user-action" || it.state == "installing" }.mapNotNull { it.sessionId }.toSet()
-        installer.abandonStale(waiting)
+        // Only a COMMITTED session is worth keeping; one the process died on
+        // before commit would never report, and its record goes back to
+        // behind through the next check (sessionCommitted).
+        installer.abandonStale()
 
         // Only packages the last check recorded as behind and due, for the
         // very lock entry it decided on (its sha256): a package without a
@@ -86,10 +88,16 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         val prev = store.app(entry.pkg) ?: Store.AppRecord(pkg = entry.pkg, label = label, state = "behind", since = Instant.now().toString())
         val boundReached = prev.reason?.startsWith("bound reached") == true
         val file = store.downloadFile(context, entry.pkg)
+        // The record as it is now, never the copy from the start of the run:
+        // a check may have merged fields in between, and a config push may
+        // have dropped the package - then there is nothing to update and the
+        // run moves on instead of throwing.
+        fun current(): Store.AppRecord? = store.app(entry.pkg)
         fun fail(why: String) {
             file.delete()
-            val attempts = prev.attempts + 1
-            store.setApp(prev.copy(state = "failed", lastError = why, attempts = attempts, nextTry = Backoff.next(attempts, Instant.now()).toString(), since = Instant.now().toString(), sessionId = null))
+            val cur = current() ?: return
+            val attempts = cur.attempts + 1
+            store.setApp(cur.copy(state = "failed", lastError = why, attempts = attempts, nextTry = Backoff.next(attempts, Instant.now()).toString(), since = Instant.now().toString(), sessionId = null))
             store.record(entry.pkg, "failed", from = s.installed, to = entry.versionCode, lockSha = lockSha, detail = why)
             if (Backoff.shouldNotify(attempts)) Notifications.failure(context, entry.pkg, label, why)
         }
@@ -107,7 +115,7 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         }
         val ok = download as? Fetcher.Download.Ok ?: return fail("download: ${tried.joinToString("; ")}")
 
-        store.setApp(store.app(entry.pkg)!!.copy(state = "verifying", since = Instant.now().toString()))
+        current()?.let { store.setApp(it.copy(state = "verifying", since = Instant.now().toString())) } ?: return
         when (val out = installer.install(entry, pin, file, ok.sha256, lockSha, config.policy.constraints, boundReached)) {
             is SessionInstaller.Outcome.Refused -> fail("refused: ${out.reason}")
             is SessionInstaller.Outcome.AlreadyCurrent -> {
@@ -117,12 +125,12 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                 val managed = config.managed.first { it.pkg == entry.pkg }
                 val decided = Decide.state(managed, Loader.lock(context, store, config), packages.abi, packages.installed(entry.pkg), packages.self)
                 val (name, reason) = Records.fromDecision(decided, packages.self)
-                store.setApp(store.app(entry.pkg)!!.copy(state = name, installed = out.versionCode, sessionId = null, since = Instant.now().toString(), reason = reason))
+                current()?.let { store.setApp(it.copy(state = name, installed = out.versionCode, sessionId = null, since = Instant.now().toString(), reason = reason)) }
                 store.record(entry.pkg, if (name == "current") "already-current" else "already-installed", to = out.versionCode, lockSha = lockSha, detail = "another zone got there first" + if (name != "current") "; now $name" else "")
             }
             is SessionInstaller.Outcome.Ahead -> {
                 file.delete()
-                store.setApp(store.app(entry.pkg)!!.copy(state = "ahead", installed = out.versionCode, sessionId = null, since = Instant.now().toString(), reason = "installed ${out.versionCode} is newer than the lock's ${entry.versionCode}"))
+                current()?.let { store.setApp(it.copy(state = "ahead", installed = out.versionCode, sessionId = null, since = Instant.now().toString(), reason = "installed ${out.versionCode} is newer than the lock's ${entry.versionCode}")) }
                 store.record(entry.pkg, "ahead", to = out.versionCode, lockSha = lockSha, detail = "something newer arrived meanwhile; never downgraded")
             }
             is SessionInstaller.Outcome.Ready -> {
@@ -130,7 +138,9 @@ class InstallWorker(context: Context, params: WorkerParameters) : CoroutineWorke
                 // The record first, the commit second: the receiver's callback
                 // must find the session it reports on.
                 val state = if (out.waitingForConstraints) "waiting-constraints" else "installing"
-                store.setApp(store.app(entry.pkg)!!.copy(state = state, sessionId = out.sessionId, since = Instant.now().toString(), reason = null))
+                val cur = current()
+                if (cur == null) { out.abandon(); return }
+                store.setApp(cur.copy(state = state, sessionId = out.sessionId, since = Instant.now().toString(), reason = null))
                 store.record(entry.pkg, "committed", from = s.installed, to = entry.versionCode, lockSha = lockSha, detail = "session ${out.sessionId}${if (out.waitingForConstraints) ", waiting for a quiet moment" else ""}")
                 try {
                     out.commit()
