@@ -5,15 +5,26 @@
 # GitHub's write-only environment secrets, never into a file, a log or a
 # chat.
 #
-#   bin/release-key-setup [keystore path]      default: ./updater-release.p12
+#   bin/release-key-setup [keystore path]
+#       default: ${XDG_DATA_HOME:-~/.local/share}/andashi/updater-release.p12
+#
+# The keystore never lives inside a git working tree: a `git add -A` there
+# would stage the release key. The default is outside, and a path inside
+# any repository is refused.
 #
 # Needs: keytool (a JDK), gh (logged in as the owner), jq, base64.
 set -euo pipefail
 REPO="${RELEASE_REPO:-andashi/updater}"
 ENV_NAME=release
 ALIAS=updater
-ks="${1:-$PWD/updater-release.p12}"
+ks="${1:-${XDG_DATA_HOME:-$HOME/.local/share}/andashi/updater-release.p12}"
 ok(){ printf '  + %s\n' "$*"; }; bad(){ printf '  x %s\n' "$*" >&2; exit 1; }
+
+ks_dir="$(dirname "$ks")"
+mkdir -p "$ks_dir"
+if git -C "$ks_dir" rev-parse --show-toplevel >/dev/null 2>&1; then
+  bad "$ks is inside a git working tree ($(git -C "$ks_dir" rev-parse --show-toplevel)) - a release key does not live where git add could reach it; pass a path outside"
+fi
 
 for t in keytool gh jq base64; do command -v "$t" >/dev/null || bad "$t is not installed"; done
 gh auth status >/dev/null 2>&1 || bad "gh is not logged in"
