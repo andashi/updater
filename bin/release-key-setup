@@ -54,11 +54,21 @@ read -r -s -p "keystore password, again: " ksp2; echo
 
 # EC P-256, thirty years: Android verifies v2/v3 signatures with it, and
 # the certificate's lifetime only has to outlive the app.
+#
+# Made in a private staging directory beside the destination and installed
+# with a hard link: link(2) never follows a symlink at the destination and
+# fails if anything exists there, so nothing that replaces the path between
+# the checks above and this step can redirect the key - the pathname checks
+# are advice, the link is the guarantee.
 umask 077
-STOREPASS="$ksp" keytool -genkeypair -v -keystore "$ks" -storetype PKCS12 \
+staging="$(mktemp -d "$ks_dir/.release-key-setup.XXXXXX")"
+trap 'rm -rf "$staging"' EXIT
+STOREPASS="$ksp" keytool -genkeypair -v -keystore "$staging/keystore.p12" -storetype PKCS12 \
   -alias "$ALIAS" -keyalg EC -groupname secp256r1 -sigalg SHA256withECDSA \
   -validity 10950 -dname "CN=andashi updater" \
   -storepass:env STOREPASS -keypass:env STOREPASS >/dev/null
+ln "$staging/keystore.p12" "$ks" || bad "could not place the keystore at $ks (something appeared there meanwhile) - the key was not written anywhere else and is discarded"
+rm -rf "$staging"; trap - EXIT
 ok "keystore written: $ks"
 
 fp="$(STOREPASS="$ksp" keytool -list -v -keystore "$ks" -alias "$ALIAS" -storepass:env STOREPASS | sed -n 's/.*SHA256: //p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')"
