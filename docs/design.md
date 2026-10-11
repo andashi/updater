@@ -543,23 +543,32 @@ what to install is decided by lock and policy, never by a command.
 ## 12. The updater's own release, key and self-update
 
 This app is the one whose compromise matters most, and it is the one whose
-signing key the owner controls. Therefore:
+signing key the owner controls. Decision
+[0004](decisions/0004-the-release-key-lives-in-an-approved-environment.md)
+(superseding 0003's offline key, which the owner will not operate per
+release):
 
-- **A separate key, not the launcher's**, and **offline**: the release APK
-  is signed on the owner's machine (hardware token where possible), never in
-  CI. A CI-held key makes a CI compromise a malicious updater on every phone
-  (§3.2, first row). Releases of this app are rare enough that a person at a
-  keyboard is a price worth paying, and the launcher's own release workflow
-  already documents the alternative with its risks (andashi/home#137).
-- **Reproducible build:** CI builds the unsigned release from the tag with a
-  pinned JDK, Gradle and AGP, twice on independent runners, and fails the
-  release if the two differ. The owner rebuilds locally, compares with the
-  CI artifact (zip entries outside the signing block byte for byte), and
-  signs *that*. The release carries the SHA-256 of the unsigned and the
-  signed APK, so anybody can repeat the comparison.
+- **A separate key, not the launcher's**, held as a secret of the GitHub
+  Environment `release`, whose only required reviewer is the owner. The
+  signing job runs in that environment and receives the key only after the
+  owner's Approve tap; a pull request cannot run it, and a workflow changed
+  to leak the key would have to be approved by the owner on a tag push.
+  Per release the owner's part is that tap, which is kept as the one human
+  look at an updater release. The scheme rests on the owner's GitHub
+  account being protected by a hardware key - a stated assumption.
+- **Reproducible build as the gate:** CI builds the unsigned release from
+  the tag with a pinned JDK, Gradle and AGP, twice on independent runners,
+  and the signing job refuses unless the two are one APK. The release
+  carries the SHA-256 of the unsigned and the signed APK and the signer's
+  fingerprint, so anybody can repeat the comparison.
 - **Pin provenance:** the certificate fingerprint is published in this
   repository's README, on andashi.org, and pinned in provisioning's
   `apks/certs/`. Three places that would all have to lie together.
+- **The one-time setup** runs in the owner's shell (`bin/release-key-setup`):
+  keytool makes the keystore, the four secrets go to the environment with
+  `gh secret set --env`, and the key and its passwords never pass through
+  any other session. The keystore file and its password, kept apart, are
+  the backup.
 - **Self-update** goes through the same path as every other app: the lock
   names the updater, the updater is its own installer of record (the host
   installed it with `-i <updater>`), the session is silent. The commit kills
@@ -733,9 +742,11 @@ Each with a recommendation; each becomes a decision record with its price.
    constraints, bounded to 24 h. `minimumAgeHours` exists, defaults to 0.
 5. **Stopped zones.** Recommendation: catch-up on zone start plus the host
    sweep; never start a zone for an update.
-6. **The updater's key.** Recommendation: a separate offline key, releases
-   signed by the owner over a reproducible CI build. The strongest single
-   control in this document.
+6. **The updater's key.** Decided 2026-10-11 ([0004](decisions/0004-the-release-key-lives-in-an-approved-environment.md)):
+   a separate key in a GitHub Environment that only the owner's Approve
+   unlocks, over a reproducible CI build on two runners; the owner's part
+   of a release is one tap. The strongest single control in this document,
+   in the form the owner will actually operate.
 7. **v1 scope of checks.** Recommendation: `netFalse` only, because it is
    trivial and already asked for; everything else is a later decision.
 8. **Tech.** Recommendation as in §16. The one real choice: reproducible

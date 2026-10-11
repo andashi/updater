@@ -1,61 +1,65 @@
 # Releasing the updater
 
-Decision [0003](decisions/0003-the-release-key-is-offline.md): the key never
-enters CI. CI proves the build is reproducible and publishes the unsigned
-artifact; the owner rebuilds, compares, signs, attaches. Every step either
-verifies something or is refused.
+Decision [0004](decisions/0004-the-release-key-lives-in-an-approved-environment.md):
+the key lives in a GitHub Environment that only the owner can unlock, CI
+proves the build is reproducible before it may sign, and the owner's part
+of a release is one Approve tap. Every step either verifies something or is
+refused.
 
-## Once: the key
+**Stated assumption:** the owner's GitHub account is protected by a
+hardware key (YubiKey). The Approve tap is the one human look at a release,
+and it is only as strong as that account.
 
-On a machine the owner trusts, offline if possible. The key is RSA 4096 or
-EC P-256 in a PKCS12 keystore; a hardware token through PKCS#11 is better
-and `apksigner` supports it (`--provider-class sun.security.pkcs11.SunPKCS11`).
-With a file keystore:
+## Once: the key and the environment
+
+The environment `release` in andashi/updater exists with the owner as its
+only required reviewer; CI can create it, because it holds no secret.
+The key itself is made and stored by the owner, on the owner's machine,
+and never passes through any session but the owner's shell:
 
 ```bash
-keytool -genkeypair -v -keystore updater-release.p12 -storetype PKCS12 \
-  -alias updater -keyalg EC -groupname secp256r1 -sigalg SHA256withECDSA \
-  -validity 10950 -dname "CN=andashi updater"
-keytool -list -v -keystore updater-release.p12 -alias updater | grep 'SHA256:'
+bin/release-key-setup
 ```
 
-The fingerprint printed last is the pin. It goes, by hand, into:
+The script asks for two passwords (keystore and key, typed, never shown),
+runs `keytool` to create `updater-release.p12`, prints the signer
+fingerprint, and sets the four secrets at environment scope with
+`gh secret set --env release`: `KEYSTORE_BASE64`, `KEYSTORE_PASSWORD`,
+`KEY_ALIAS`, `KEY_PASSWORD`. The keystore file stays on the owner's disk as
+the backup - GitHub secrets are write-only - and is kept with its password
+apart from it. Losing both means every phone needs a reinstall over adb; it
+is the one thing in this project that cannot be regenerated.
+
+The fingerprint the script prints is the pin. It goes, by hand, into:
 
 - this repository's README ("Signer");
 - andashi.org, next to the launcher's;
 - `apks/certs/org.andashi.updater.cert` in andashi/provisioning, through a
   pull request, lower-case hex without colons.
 
-Keep the keystore and its password apart, each with a backup the owner can
-reach without the other being online. Losing the key means every phone
-needs a reinstall over adb (0003); it is the one thing in this project
-that cannot be regenerated.
-
 ## Every release
 
 1. **Tag.** `git tag v0.1.0 && git push origin v0.1.0` on a commit on
-   `main` whose checks are green. CI (`release.yml`) runs the tests, builds
-   the unsigned release on two runners, refuses if they differ, and opens a
-   *draft* release with `updater-unsigned.apk`, `SHA256SUMS` and the tool
-   versions.
-2. **Rebuild and compare.** `bin/release-sign v0.1.0 updater-release.p12`
-   checks out the tag, builds the unsigned release locally with the same
-   pinned toolchain, downloads CI's artifact, and refuses to go on unless
-   the three hashes (runner a, runner b, local) are one hash.
-3. **Sign.** The same script signs CI's artifact - not the local build, so
-   what ships is byte for byte what two runners and the owner agreed on -
-   with `apksigner`, v2 and v3 signatures, and prints the signer
-   fingerprint, which must equal the pin.
-4. **Attach and publish.** `gh release upload v0.1.0 updater-v0.1.0.apk`,
-   then publish the draft. The lock refresh in andashi/provisioning finds
-   the asset the next morning, verifies it against the pinned signer, and
-   the phones update themselves from it.
+   `main` whose checks are green. `release.yml` runs the tests, builds the
+   unsigned release on two runners, and refuses to go on if they differ.
+2. **Approve.** The signing job waits in the `release` environment. GitHub
+   asks the owner to approve the deployment - in the mobile app, that is
+   one tap. Nothing before that tap has the key.
+3. **Sign and publish.** The job verifies it holds the artifact both runners
+   agreed on, signs it with v2 and v3 signatures, prints the signer
+   fingerprint, and publishes the release: the signed APK, the unsigned
+   APK, `SHA256SUMS` for both, the certificate dump and the tool versions.
+   A re-run of the workflow for the same tag updates the same release.
+4. **The phones.** The lock refresh in andashi/provisioning finds the asset
+   the next morning, verifies it against the pinned signer, and the
+   updaters install it as they install everything else, themselves
+   included.
 
 ## What refuses
 
-- CI: a build that differs between runners.
-- `bin/release-sign`: a local build that differs from CI's, a tag that is
-  not on `main`, a signer fingerprint that is not the pin recorded in the
-  README.
+- CI: a build that differs between runners; a tag that is not `v*`.
+- The environment: a signing job nobody approved never gets the key.
+- The signing job: an artifact that does not match the hash the runners
+  agreed on.
 - The phones: anything not signed by the pinned key, by Android's rule
   before the updater's.

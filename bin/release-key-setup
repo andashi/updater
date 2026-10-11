@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# The owner's one-time setup of the release key (docs/release.md, decision
+# 0004). Runs on the owner's machine, in the owner's shell, and nowhere
+# else: the passwords are typed here and go into the keystore and into
+# GitHub's write-only environment secrets, never into a file, a log or a
+# chat.
+#
+#   bin/release-key-setup [keystore path]      default: ./updater-release.p12
+#
+# Needs: keytool (a JDK), gh (logged in as the owner), base64.
+set -euo pipefail
+REPO="${RELEASE_REPO:-andashi/updater}"
+ENV_NAME=release
+ALIAS=updater
+ks="${1:-$PWD/updater-release.p12}"
+ok(){ printf '  + %s\n' "$*"; }; bad(){ printf '  x %s\n' "$*" >&2; exit 1; }
+
+for t in keytool gh base64; do command -v "$t" >/dev/null || bad "$t is not installed"; done
+gh auth status >/dev/null 2>&1 || bad "gh is not logged in"
+[ ! -e "$ks" ] || bad "$ks exists - this script never overwrites a key; move it away first if you really mean to make a new one"
+gh api "repos/$REPO/environments/$ENV_NAME" >/dev/null 2>&1 || bad "environment $ENV_NAME does not exist in $REPO (CI creates it; see docs/release.md)"
+
+echo "Two passwords, typed twice each, never shown. Keep them apart from the keystore file."
+read -r -s -p "keystore password: " ksp; echo
+read -r -s -p "keystore password, again: " ksp2; echo
+[ "$ksp" = "$ksp2" ] || bad "the keystore passwords differ"
+[ "${#ksp}" -ge 12 ] || bad "the keystore password is shorter than 12 characters"
+read -r -s -p "key password: " kp; echo
+read -r -s -p "key password, again: " kp2; echo
+[ "$kp" = "$kp2" ] || bad "the key passwords differ"
+[ "${#kp}" -ge 12 ] || bad "the key password is shorter than 12 characters"
+
+# EC P-256, thirty years: Android verifies v2/v3 signatures with it, and
+# the certificate's lifetime only has to outlive the app.
+umask 077
+STOREPASS="$ksp" KEYPASS="$kp" keytool -genkeypair -v -keystore "$ks" -storetype PKCS12 \
+  -alias "$ALIAS" -keyalg EC -groupname secp256r1 -sigalg SHA256withECDSA \
+  -validity 10950 -dname "CN=andashi updater" \
+  -storepass:env STOREPASS -keypass:env KEYPASS >/dev/null
+ok "keystore written: $ks"
+
+fp="$(STOREPASS="$ksp" keytool -list -v -keystore "$ks" -alias "$ALIAS" -storepass:env STOREPASS | sed -n 's/.*SHA256: //p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')"
+[ "${#fp}" = 64 ] || bad "could not read the fingerprint back"
+
+# Write-only secrets at environment scope: only the signing job, after the
+# owner's approval, ever reads them.
+base64 -w0 < "$ks" | gh secret set KEYSTORE_BASE64 --repo "$REPO" --env "$ENV_NAME"
+printf '%s' "$ksp" | gh secret set KEYSTORE_PASSWORD --repo "$REPO" --env "$ENV_NAME"
+printf '%s' "$ALIAS" | gh secret set KEY_ALIAS --repo "$REPO" --env "$ENV_NAME"
+printf '%s' "$kp" | gh secret set KEY_PASSWORD --repo "$REPO" --env "$ENV_NAME"
+unset ksp ksp2 kp kp2 STOREPASS KEYPASS
+ok "four secrets set in environment $ENV_NAME of $REPO"
+gh secret list --repo "$REPO" --env "$ENV_NAME" | sed 's/^/      /'
+
+cat <<EOF
+
+  signer sha256: $fp
+
+  This is the pin. Put it, by hand, into README.md ("Signer"), on
+  andashi.org, and into andashi/provisioning as apks/certs/org.andashi.updater.cert
+  (that line alone, lower-case hex, through a pull request).
+  Back up $ks and its password separately. Both lost = every phone reinstalled over adb.
+EOF
