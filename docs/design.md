@@ -202,7 +202,8 @@ Nothing new in kind. The provisioning repo gains:
 
 - a catalog entry for the updater (source `obtainium`, i.e. our GitHub
   release, all six zones), installed *first* in `10-apps.sh`, pinned in
-  `apks/certs/`;
+  `apks/certs/` - installed twice on a fresh device, the second time with
+  `-i` naming itself, because the first cannot (§6);
 - `-i <updater>` (and `--update-ownership`, *measure*) on every install of a
   managed app, so the updater is installer of record from day one; the same
   for `install-existing`, which carries the installer of record per package;
@@ -227,7 +228,7 @@ Nothing new in kind. The provisioning repo gains:
 | update in a running zone | the updater, `PackageInstaller` session with `USER_ACTION_NOT_REQUIRED` | silent when: installer of record, `REQUEST_INSTALL_PACKAGES` allowed, `UPDATE_PACKAGES_WITHOUT_USER_ACTION` (normal permission, declared), updater targets API 31+, app targets API 29+, same signer, and (Android 14+) nobody else holds update ownership |
 | update of a package that lives only in stopped zones | host, same adb command, on the stopped user | nothing runs in a stopped user; `adb install -i <pkg> --user 14 <apk>` into stopped Lab succeeded, the user stayed stopped, data is created on first unlock (measured 2026-10-02, shell) |
 | update of a package shared with a running zone | whichever running zone's updater gets there first; the code path is device-wide | a package is installed once per device; Ops' Bitwarden is Home's Bitwarden |
-| the updater itself | the updater, same session path; the host at provisioning | self-update as installer of record is silent; the process dies on commit, so the in-flight session is persisted first and reconciled on the next start |
+| the updater itself | the updater, same session path; the host at provisioning | self-update as installer of record is silent; the process dies on commit, so the in-flight session is persisted first and reconciled on the next start. Its first install cannot name itself as installer, because the named installer must already exist (measured 2026-10-10, emulator-5562, shell: installer stays null); the host installs it, then installs the same version again with `-i`, which moves the installer (§6, measured 2026-10-02) |
 | anything Obtainium/Accrescent/Play/the GrapheneOS store installed | theirs | decision 0012; the updater reports them as `foreign` and never touches them |
 
 The owner's line "andashi install should probably use the app directly"
@@ -239,6 +240,22 @@ update is the app's again. Handing APK bytes from the host to the app through
 the provider was weighed and dropped for v1: it buys one code path at the cost
 of streaming every APK through binder, and the stopped-zone case needs adb
 anyway. The ingest accepts a lock in host-only mode; APKs stay with adb.
+
+**Every host install names its user.** Measured 2026-10-10 by the
+provisioning side (emulator-5558, shell): `adb install -r -i <updater> <apk>`
+*without* `--user` installed the package into every user on the device,
+because pm's default user is ALL and that covers a replace too. With
+`--user N` the code updated device-wide and the set of users holding the
+package stayed exactly as it was. So the first install, the device-wide
+upgrade and the same-version repair all carry `--user N` for a user that
+has the package.
+
+**`-i` names a package the user must have.** Measured 2026-10-10 by the
+provisioning side (emulator-5558, shell): a reinstall with `-i <updater>`
+run as a user that does not hold the updater (Work) left the installer
+null; the same through a user that holds it (Cloud) took. So the updater
+goes into every zone before any app, and a repair runs through a user that
+holds both the app and the updater.
 
 **The shell strips the installer of record, silently.** Measured 2026-10-02:
 `adb install -r --user 0 <apk>` *without* `-i` on a package the updater owns
@@ -271,7 +288,7 @@ Per managed package, the state is one of:
 | `ahead` | installed > lock; somebody updated past the lock, or the lock went back | warning, never downgraded |
 | `downloading` / `verifying` / `installing` / `waiting-constraints` | in flight, with the session id | pending |
 | `user-action` | the system wants a tap (`STATUS_PENDING_USER_ACTION`); notification posted with the system's intent — never an activity start from the background, which GrapheneOS blocks ("Background activity launch blocked", logged for Obtainium on 2026-10-02) | **action needed** |
-| `not-owner` | installer of record is somebody else, or null after a shell install without `-i`; a silent update is impossible | warning; the host fixes it by a same-version reinstall with `-i` (§6) |
+| `not-owner` | installer of record is somebody else, or null after a shell install without `-i` - reported whether or not an update is due, because the next one would prompt | warning; the host fixes it now, silently, by a same-version reinstall with `-i` (§6) |
 | `failed` | with the reason, attempt count, next retry | failure after the retry budget |
 | `missing` | managed, not installed in this user | warning (the host's job) |
 | `unverifiable` | no lock entry for this ABI, or lock and pin disagree | **failure** |
@@ -343,6 +360,12 @@ the host has never had.
   Orbot's lockdown VPN. So the host grants the exemption at provisioning,
   reads it back from `dumpsys deviceidle whitelist`, and the updater
   reports `exemption: missing` loudly if it ever finds itself without it.
+  Measured 2026-10-10 on the same instance: the entry survives
+  `install -r` of the same or a newer version (so a self-update keeps it)
+  and is dropped by `pm clear` and by uninstall; after either, the host
+  grants it again. Uninstalling the updater also resets the installer of
+  record of every app it installed to null, so an uninstall is never a
+  repair: the host would have to reinstall every managed app with `-i`.
   This is almost certainly Obtainium's missing piece too: the one GrapheneOS
   Pixel report that said "unrestricted fixed it" (#1550, 2025-08-28) is
   this exemption.
@@ -383,7 +406,8 @@ the host has never had.
     "maxAgeDays": 14,
     "allowedHosts": ["raw.githubusercontent.com", "github.com",
                      "objects.githubusercontent.com", "release-assets.githubusercontent.com",
-                     "dist.torproject.org", "archive.torproject.org", "f-droid.org"]
+                     "dist.torproject.org", "archive.torproject.org", "f-droid.org",
+                     "developers.yubico.com"]
   },
   "schedule": { "checkEveryHours": 6, "requireUnmetered": false, "requireCharging": false },
   "policy": {
@@ -402,7 +426,12 @@ the host has never had.
 
 Generated per zone from the catalog: `managed` is every app of that zone's
 `profiles` with a source the lock covers (`obtainium`, `fdroid`,
-`torproject`) plus the updater itself; `signer` is `apks/certs/<pkg>.cert`.
+`torproject`, `direct` - a vendor's own download directory with a detached
+signature, provisioning#27) plus the updater itself; `signer` is
+`apks/certs/<pkg>.cert`. `allowedHosts` is generated from a curated list in
+the distribution's configuration, never from the lock's URLs, and `make
+check` refuses a lock whose URLs leave that list: the lock must not be able
+to widen where a phone connects (§10).
 `checks.netFalse` is every `net: false` app of the zone. A hand-edited file
 fails `make check` against the generator, as the launcher files do.
 
@@ -424,7 +453,8 @@ fails `make check` against the generator, as the launcher files do.
   ],
   "foreign": [ { "pkg": "com.example.sideloaded", "installer": "dev.imranr.obtainium" } ],
   "checks": { "netFalse": { "ok": ["org.andashi.home"], "violations": ["helium314.keyboard"] } },
-  "history": [ { "at": "…", "pkg": "…", "from": 7000, "to": 7010, "lock": "…", "result": "success" } ]
+  "history": [ { "at": "…", "pkg": "…", "event": "updated", "from": 7000, "to": 7010, "lock": "…",
+                 "detail": "confirmed by the package manager", "result": "success" } ]
 }
 ```
 
@@ -498,6 +528,14 @@ what to install is decided by lock and policy, never by a command.
   against `checked` turns a silent refresh into a `stale` warning and a
   notification; a missing heartbeat is `unknown`, reported, not alarmed.
   Same trust as the lock, no history noise on `main`.
+- **Silent-update throttle:** Android answers a second silent update of
+  the same package by the same installer within a short window with
+  `STATUS_PENDING_USER_ACTION` (measured 2026-10-10 on emulator-5562: two
+  updates about 25 s apart, the second asked for confirmation). The updater
+  does not work around it - it is the system's rate limit on exactly this
+  power - and a lock moves a package a version a day, so it is only ever
+  seen when a maintainer re-locks twice in a minute. The state then says
+  `user-action` and the notification carries the tap.
 - **Retry budget:** per package and lock version, exponential backoff, a
   failure notification after the third miss, then a daily retry until the
   lock moves.
@@ -505,23 +543,33 @@ what to install is decided by lock and policy, never by a command.
 ## 12. The updater's own release, key and self-update
 
 This app is the one whose compromise matters most, and it is the one whose
-signing key the owner controls. Therefore:
+signing key the owner controls. Decision
+[0004](decisions/0004-the-release-key-lives-in-an-approved-environment.md)
+(superseding 0003's offline key, which the owner will not operate per
+release):
 
-- **A separate key, not the launcher's**, and **offline**: the release APK
-  is signed on the owner's machine (hardware token where possible), never in
-  CI. A CI-held key makes a CI compromise a malicious updater on every phone
-  (§3.2, first row). Releases of this app are rare enough that a person at a
-  keyboard is a price worth paying, and the launcher's own release workflow
-  already documents the alternative with its risks (andashi/home#137).
-- **Reproducible build:** CI builds the unsigned release from the tag with a
-  pinned JDK, Gradle and AGP, twice on independent runners, and fails the
-  release if the two differ. The owner rebuilds locally, compares with the
-  CI artifact (zip entries outside the signing block byte for byte), and
-  signs *that*. The release carries the SHA-256 of the unsigned and the
-  signed APK, so anybody can repeat the comparison.
+- **A separate key, not the launcher's**, held as a secret of the GitHub
+  Environment `release`, whose only required reviewer is the owner. The
+  signing job runs in that environment and receives the key only after the
+  owner's Approve tap; a pull request cannot run it, and a workflow changed
+  to leak the key would have to be approved by the owner on a tag push.
+  Per release the owner's part is that tap, which is kept as the one human
+  look at an updater release. The scheme rests on the owner's GitHub
+  account being protected by a hardware key - a stated assumption.
+- **Reproducible build as the gate:** CI builds the unsigned release from
+  the tag with a pinned JDK, Gradle and AGP, twice on independent runners,
+  and the signing job refuses unless the two are one APK. The release
+  carries the SHA-256 of the unsigned and the signed APK and the signer's
+  fingerprint, so anybody can repeat the comparison.
 - **Pin provenance:** the certificate fingerprint is published in this
   repository's README, on andashi.org, and pinned in provisioning's
   `apks/certs/`. Three places that would all have to lie together.
+- **The one-time setup** runs in the owner's shell (`bin/release-key-setup`):
+  keytool makes the keystore, the three secrets go to the environment with
+  `gh secret set --env` after the script has checked that the environment
+  requires exactly the owner's approval, and the key and its password never
+  pass through any other session. The keystore file and its password, kept
+  apart, are the backup.
 - **Self-update** goes through the same path as every other app: the lock
   names the updater, the updater is its own installer of record (the host
   installed it with `-i <updater>`), the session is silent. The commit kills
@@ -547,6 +595,34 @@ A browser's sideloading per zone could be closed with the install appop
 (`appops set --user N <browser> REQUEST_INSTALL_PACKAGES deny`); that is a
 provisioning decision, noted here because the updater's report will show
 what gets through.
+
+## 13a. Your catalog, your lock
+
+A phone provisioned from a private catalog (`CONFIG_DIR`, provisioning's
+"your catalog, not the template") must not run against this project's lock:
+the updater would report `unverifiable` for every app the template does not
+know and `missing` for nothing it should, which is safe and useless. The
+lock URL and the pins come from the host, so the answer is the host's:
+
+- **A fork that runs the refresh.** The lock refresh is a workflow in the
+  provisioning repository; a fork carries it and commits its own
+  `apks/lock.json` on its own `main`, daily, with its own pins. The
+  generated `updater.json` points `lock.url` (and `heartbeatUrl`) at that
+  fork. Nothing in the updater knows which repository it is reading.
+- **No fork, no CI: `host-only`.** The host already produces a verified
+  lock for the first install (`make lock`, `make from-lock`); pushed through
+  the ingest provider it is the lock the zone uses, and the phone updates
+  from it as far as it goes. The price is the one 0002 names for this mode:
+  updates arrive when the laptop does. `andashi status` says so.
+- **Both.** A private catalog can mix: the template's apps against the
+  template's lock would need one lock per source, which the config does not
+  model. One zone, one lock. A catalog that wants apps outside its lock
+  lists them with a source the updater does not manage, and the report
+  names them as foreign.
+
+What provisioning owes for this: the generator takes the lock URL from the
+catalog's configuration rather than hard-coding this repository's, and
+`make lock` is documented as the host-only path.
 
 ## 14. Reporting
 
@@ -667,9 +743,11 @@ Each with a recommendation; each becomes a decision record with its price.
    constraints, bounded to 24 h. `minimumAgeHours` exists, defaults to 0.
 5. **Stopped zones.** Recommendation: catch-up on zone start plus the host
    sweep; never start a zone for an update.
-6. **The updater's key.** Recommendation: a separate offline key, releases
-   signed by the owner over a reproducible CI build. The strongest single
-   control in this document.
+6. **The updater's key.** Decided 2026-10-11 ([0004](decisions/0004-the-release-key-lives-in-an-approved-environment.md)):
+   a separate key in a GitHub Environment that only the owner's Approve
+   unlocks, over a reproducible CI build on two runners; the owner's part
+   of a release is one tap. The strongest single control in this document,
+   in the form the owner will actually operate.
 7. **v1 scope of checks.** Recommendation: `netFalse` only, because it is
    trivial and already asked for; everything else is a later decision.
 8. **Tech.** Recommendation as in §16. The one real choice: reproducible

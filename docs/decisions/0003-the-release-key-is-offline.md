@@ -1,6 +1,6 @@
 # 0003 — The release key is offline
 
-**Status:** accepted (2026-10-09)
+**Status:** accepted (2026-10-09), superseded 2026-10-11 by [0004](0004-the-release-key-lives-in-an-approved-environment.md): the owner will not sign at a keyboard per release; the key lives in a GitHub Environment that only the owner's Approve unlocks
 
 ## Context
 

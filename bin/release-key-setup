@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# The owner's one-time setup of the release key (docs/release.md, decision
+# 0004). Runs on the owner's machine, in the owner's shell, and nowhere
+# else: the passwords are typed here and go into the keystore and into
+# GitHub's write-only environment secrets, never into a file, a log or a
+# chat.
+#
+#   bin/release-key-setup [keystore path]      default: ./updater-release.p12
+#
+# Needs: keytool (a JDK), gh (logged in as the owner), jq, base64.
+set -euo pipefail
+REPO="${RELEASE_REPO:-andashi/updater}"
+ENV_NAME=release
+ALIAS=updater
+ks="${1:-$PWD/updater-release.p12}"
+ok(){ printf '  + %s\n' "$*"; }; bad(){ printf '  x %s\n' "$*" >&2; exit 1; }
+
+for t in keytool gh jq base64; do command -v "$t" >/dev/null || bad "$t is not installed"; done
+gh auth status >/dev/null 2>&1 || bad "gh is not logged in"
+[ ! -e "$ks" ] || bad "$ks exists - this script never overwrites a key; move it away first if you really mean to make a new one"
+# The environment must be the one the release contract describes before a
+# key goes into it: exactly one required reviewer, and that reviewer the
+# person running this. Any other shape - no reviewer, a second one, a
+# team - would let somebody else approve a release.
+me="$(gh api user --jq .login)"
+env_json="$(gh api "repos/$REPO/environments/$ENV_NAME" 2>/dev/null)" || bad "environment $ENV_NAME does not exist in $REPO (CI creates it; see docs/release.md)"
+reviewers="$(jq -r '[.protection_rules[]? | select(.type=="required_reviewers") | .reviewers[] | "\(.type):\(.reviewer.login // .reviewer.slug)"] | join(",")' <<<"$env_json")"
+[ "$reviewers" = "User:$me" ] || bad "environment $ENV_NAME must have exactly one required reviewer, you ($me); it has: ${reviewers:-none}"
+ok "environment $ENV_NAME requires your approval and nobody else's"
+
+# One password: a PKCS12 keystore protects its key with the keystore
+# password and ignores a separate key password, so asking for two would
+# store one that never applies.
+echo "One password, typed twice, never shown. Keep it apart from the keystore file."
+read -r -s -p "keystore password: " ksp; echo
+read -r -s -p "keystore password, again: " ksp2; echo
+[ "$ksp" = "$ksp2" ] || bad "the passwords differ"
+[ "${#ksp}" -ge 12 ] || bad "the password is shorter than 12 characters"
+
+# EC P-256, thirty years: Android verifies v2/v3 signatures with it, and
+# the certificate's lifetime only has to outlive the app.
+umask 077
+STOREPASS="$ksp" keytool -genkeypair -v -keystore "$ks" -storetype PKCS12 \
+  -alias "$ALIAS" -keyalg EC -groupname secp256r1 -sigalg SHA256withECDSA \
+  -validity 10950 -dname "CN=andashi updater" \
+  -storepass:env STOREPASS -keypass:env STOREPASS >/dev/null
+ok "keystore written: $ks"
+
+fp="$(STOREPASS="$ksp" keytool -list -v -keystore "$ks" -alias "$ALIAS" -storepass:env STOREPASS | sed -n 's/.*SHA256: //p' | head -1 | tr -d ':' | tr 'A-F' 'a-f')"
+[ "${#fp}" = 64 ] || bad "could not read the fingerprint back"
+
+# Write-only secrets at environment scope: only the signing job, after the
+# owner's approval, ever reads them.
+base64 -w0 < "$ks" | gh secret set KEYSTORE_BASE64 --repo "$REPO" --env "$ENV_NAME"
+printf '%s' "$ksp" | gh secret set KEYSTORE_PASSWORD --repo "$REPO" --env "$ENV_NAME"
+printf '%s' "$ALIAS" | gh secret set KEY_ALIAS --repo "$REPO" --env "$ENV_NAME"
+unset ksp ksp2 STOREPASS
+ok "three secrets set in environment $ENV_NAME of $REPO"
+gh secret list --repo "$REPO" --env "$ENV_NAME" | sed 's/^/      /'
+
+cat <<EOF
+
+  signer sha256: $fp
+
+  This is the pin. Put it, by hand, into README.md ("Signer"), on
+  andashi.org, and into andashi/provisioning as apks/certs/org.andashi.updater.cert
+  (that line alone, lower-case hex, through a pull request).
+  Back up $ks and its password separately. Both lost = every phone reinstalled over adb.
+EOF

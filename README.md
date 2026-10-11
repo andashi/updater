@@ -17,6 +17,7 @@ signed, or stall, and the phone reports both.
 |---|---|
 | [docs/design.md](docs/design.md) | the design, threat model first |
 | [docs/decisions/](docs/decisions/README.md) | the decisions and their prices |
+| [docs/release.md](docs/release.md) | the key, once, and a release: CI builds twice, the owner approves, CI signs |
 | [AGENTS.md](AGENTS.md) | how changes reach `main` |
 
 ## Layout
@@ -25,14 +26,14 @@ signed, or stall, and the phone reports both.
 core/    pure Kotlin: lock, policy, state machine - every decision, unit-tested with its refusal case
 app/     the updater, org.andashi.updater
 probe/   a throwaway app that answers one hardware question (design §16)
-e2e/     emulator tests, run by hand against andashi/provisioning's emulator
-bin/     pr-gate, the merge conditions as a condition
+e2e/     emulator tests, run by hand against andashi/provisioning's emulator: probe.sh, updater.sh
+bin/     pr-gate (the merge conditions as a condition), release-key-setup (the owner's one-time key setup)
 ```
 
 ```bash
 ./gradlew :core:test                      # the decisions
 ./gradlew :probe:assembleDebug            # the probe
-./gradlew :app:assembleRelease            # unsigned; the owner signs offline (0003)
+./gradlew :app:assembleRelease            # unsigned; CI signs after the owner's approval (0004)
 ```
 
 ## Signer

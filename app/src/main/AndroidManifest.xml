@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Two kinds of URL and nothing else (design §10). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- The install appop, set per zone by the host and read back. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Normal protection level: what lets an installer of record update
+         without a dialog (API 31+). Obtainium and Accrescent carry it too;
+         measured 2026-10-02. -->
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+    <!-- Download and install run in a dataSync foreground service; it can
+         only start from a background job with the device-idle exemption the
+         host grants (design §8). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- A zone that starts catches up at once (design §8). -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!-- The managed set is dynamic and the report names what is not managed,
+         so package visibility cannot be a static list. -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
+        tools:ignore="QueryAllPackagesPermission" />
+
+    <application
+        android:name=".UpdaterApp"
+        android:label="Andashi Updater"
+        android:icon="@mipmap/ic_launcher"
+        android:allowBackup="false"
+        android:supportsRtl="true"
+        android:networkSecurityConfig="@xml/network_security_config">
+
+        <!-- Status, nothing to configure: policy comes from the host. -->
+        <activity
+            android:name=".ui.StatusActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Updater">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Host → phone: updater.json, and lock.json in host-only mode.
+             content write, per user. Exported for the shell, which holds
+             WRITE_SECURE_SETTINGS; the provider also checks the calling uid. -->
+        <provider
+            android:name=".host.IngestProvider"
+            android:authorities="${applicationId}.ingest"
+            android:exported="true"
+            android:writePermission="android.permission.WRITE_SECURE_SETTINGS"
+            android:grantUriPermissions="false" />
+
+        <!-- Phone → host: state and diagnostics, as JSON. Same gate. -->
+        <provider
+            android:name=".host.StateProvider"
+            android:authorities="${applicationId}.state"
+            android:exported="true"
+            android:permission="android.permission.WRITE_SECURE_SETTINGS"
+            android:grantUriPermissions="false" />
+
+        <!-- CHECK_NOW from the shell. A receiver can only be gated by its
+             manifest permission (measured 2026-10-09, design §5.2). -->
+        <receiver
+            android:name=".host.ControlReceiver"
+            android:exported="true"
+            android:permission="android.permission.WRITE_SECURE_SETTINGS">
+            <intent-filter>
+                <action android:name="${applicationId}.action.CHECK_NOW" />
+            </intent-filter>
+        </receiver>
+
+        <!-- The zone just started (or the device booted): check now. -->
+        <receiver
+            android:name=".work.StartReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- The package installer's answer to a session. Not exported: the
+             system reaches it through the PendingIntent the session was
+             given, nobody else can. -->
+        <receiver
+            android:name=".install.InstallStatusReceiver"
+            android:exported="false" />
+
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+    </application>
+</manifest>
