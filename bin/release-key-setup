@@ -22,12 +22,16 @@ ok(){ printf '  + %s\n' "$*"; }; bad(){ printf '  x %s\n' "$*" >&2; exit 1; }
 
 ks_dir="$(dirname "$ks")"
 mkdir -p "$ks_dir"
+ks_dir="$(cd -P "$ks_dir" && pwd)"   # the real directory, links resolved
 if git -C "$ks_dir" rev-parse --show-toplevel >/dev/null 2>&1; then
   bad "$ks is inside a git working tree ($(git -C "$ks_dir" rev-parse --show-toplevel)) - a release key does not live where git add could reach it; pass a path outside"
 fi
 
 for t in keytool gh jq base64; do command -v "$t" >/dev/null || bad "$t is not installed"; done
 gh auth status >/dev/null 2>&1 || bad "gh is not logged in"
+# -L before -e: a dangling symlink passes -e and would make keytool write
+# wherever it points, a working tree included, under any name.
+[ ! -L "$ks" ] || bad "$ks is a symlink - the keystore is written to a real path, never through a link"
 [ ! -e "$ks" ] || bad "$ks exists - this script never overwrites a key; move it away first if you really mean to make a new one"
 # The environment must be the one the release contract describes before a
 # key goes into it: exactly one required reviewer, and that reviewer the
